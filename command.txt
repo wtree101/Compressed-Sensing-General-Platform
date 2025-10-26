@@ -1,0 +1,16 @@
+cd /home/twubi/RGD
+matlab -nodisplay -r "profile on; demo_ptycho_my_RGD; profile off; profsave(profile('info'),'my_profile_results'); exit"
+
+matlab -nodisplay -r "profile on; multipletrial(1500,40,60,5,1,100,0); profile off; profsave(profile('info'),'my_profile_results'); exit"
+
+multipletrial(1500,40,60,5,1,100,0)
+
+tic; % Start timing
+multipletrial(1500,40,60,5,100,1,0); % Run the function
+t = toc; % Stop timing and store the elapsed time
+disp(['Execution time: ', num2str(t), ' seconds']);
+
+tic; % Start timing
+PhaseTransition(60,40,6,1,100,1)
+t = toc; % Stop timing and store the elapsed time
+disp(['Execution time: ', num2str(t), ' seconds']);

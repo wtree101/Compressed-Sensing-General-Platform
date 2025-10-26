@@ -1,0 +1,195 @@
+%%%%%%%%%% Phase Diagram for Tensor-Lifted Matrix Recovery
+% This script generates phase diagrams for low-rank symmetric matrix recovery
+% using fourth-order tensor formulation: X = UU^T, T = X ⊗ X
+% Linear model: y_i = ⟨A_i ⊗ A_i, T⟩
+%
+% The script uses a modular design with run_rank_experiment() function
+% that accepts different solver function handles (e.g., @onetrial_tensor)
+
+clear; clc;
+
+%% Experiment Configuration
+fprintf('=== Low rank phase retrieval; Support Tensor-Lifted method; Phase Diagram Setup ===\n');
+
+% trial_func = @onetrial_MatTensor;
+% alg_func = @solve_PGD;
+% alg_name = 'TensorPGD';
+% init_method = [];
+% nonlinear_func = [];
+trial_func = @onetrial_Mat;
+alg_func = @solve_PGD_amplitude;
+alg_name = 'MatsubGD';
+nonlinear_func = @(y) abs(y);  % Example nonlinear function for phase retrieval
+
+% Set initialization method directly with function handle
+init_method = @initialize_power_method;  % Options: @Initialization, @Initialization_random, @initialize_power_method
+
+% Matrix dimensions and problem setup
+d1 = 20;             % Matrix row dimension
+d2 = 20;             % Matrix column dimension (d1 x d2)
+kappa = 2;           % Condition number
+r_star = 1;          % Target rank for ground truth
+r_max = 1;          % Maximum rank to test
+r_grid = 1:1:1;     % Rank values to test
+
+% Experiment parameters
+trial_num = 20;      % Number of trials per (r, m) pair
+verbose = 0;         % 0: minimal output, 1: detailed output
+add_flag = 0;        % 0: overwrite existing data, 1: add to existing data
+T = 100;             % Number of iterations per trial
+problem_flag = 2;
+use_parallel = false; % true: use parpool/parfor, false: sequential computation
+
+% Grid generation parameters
+scale_num = 3;       % Number of scale levels for measurement grid
+
+% Step size parameters to test
+mu_list = [0.01];    % Step sizes for tensor PGD
+% mu_list = [0.1, 0.05, 0.01, 0.005, 0.001];
+
+fprintf('Configuration:\n');
+fprintf('  Matrix size: %dx%d\n', d1, d2);
+fprintf('  Rank grid: [%d, %d] with %d values\n', min(r_grid), max(r_grid), length(r_grid));
+fprintf('  Trials per point: %d\n', trial_num);
+fprintf('  Iterations per trial: %d\n', T);
+% fprintf('  Initialization: %s\n', func2str(init_method));
+
+%% Generate Measurement Grid and Setup Directory
+fprintf('\n=== Setting up Measurement Grid ===\n');
+grid_params = struct('d1', d1, 'd2', d2, 'r_max', r_max, 'kappa', kappa, ...
+                     'r_star', r_star, 'problem_flag', problem_flag, ...
+                     'alg_name', alg_name, 'scale_num', scale_num);
+[m_all, data_dir] = setup_measurement_grid(grid_params);
+
+
+%% Run Experiments
+fprintf('\n=== Starting Tensor Phase Diagram Experiments ===\n');
+
+% Initialize parallel pool if requested
+if use_parallel
+    pool = gcp('nocreate'); % Check if pool already exists
+    if isempty(pool)
+        parpool(5); % Create pool with 5 workers
+        fprintf('Parallel pool initialized with 5 workers.\n');
+    else
+        fprintf('Using existing parallel pool with %d workers.\n', pool.NumWorkers);
+    end
+else
+    fprintf('Running in sequential mode (parallel processing disabled).\n');
+end
+
+total_experiments = length(mu_list) * length(r_grid);
+experiment_count = 0;
+
+for mu_idx = 1:length(mu_list)
+    mu = mu_list(mu_idx);
+    
+    % Create subdirectory for this step size
+    mu_dir = fullfile(data_dir, sprintf('mu_%.4f', mu));
+    if ~exist(mu_dir, 'dir')
+        mkdir(mu_dir);
+    end
+    
+    fprintf('\n--- Step size mu = %.4f (%d/%d) ---\n', mu, mu_idx, length(mu_list));
+    
+    for r = r_grid
+        experiment_count = experiment_count + 1;
+        
+        fprintf('\nExperiment %d/%d: r=%d, mu=%.4f\n', ...
+                experiment_count, total_experiments, r, mu);
+        
+        %% Run experiments for this rank across all measurement counts
+        % File to store aggregated results for this rank
+        result_file = fullfile(mu_dir, sprintf('r_%d.mat', r));
+        
+        % Check if results already exist
+        if add_flag && exist(result_file, 'file')
+            load(result_file, 'results');
+            fprintf('  Loaded existing results from %s\n', result_file);
+        else
+            results = struct();
+            results.r = r;
+            results.mu = mu;
+            results.m_values = m_all;
+            results.success_count = zeros(size(m_all));
+            results.avg_error = zeros(size(m_all));
+            results.std_error = zeros(size(m_all));
+            results.avg_time = zeros(size(m_all));
+            results.trial_errors = cell(size(m_all));
+        end
+        
+        % Generate ground truth once for all trials at this rank
+        if d1 ~= d2
+            warning('d1 != d2: generating non-square ground truth matrix');
+        end
+        U_true = randn(d1, r_star);
+        Xstar = U_true * U_true';  % Symmetric rank-r_star matrix
+        Xstar = Xstar / norm(Xstar, 'fro');
+        
+        % Loop over measurement counts
+        for m_idx = 1:length(m_all)
+            m = m_all(m_idx);
+            
+            fprintf('  m=%d (%d/%d): ', m, m_idx, length(m_all));
+            
+            % Skip if already computed and add_flag is on
+            if add_flag && results.success_count(m_idx) >= trial_num
+                fprintf('Already computed. Skipping.\n');
+                continue;
+            end
+            
+            % Setup parameters for multiple trials
+            trial_params = struct();
+            trial_params.d1 = d1;
+            trial_params.d2 = d2;
+            trial_params.m = m;
+            trial_params.r = r;
+            trial_params.kappa = kappa;
+            trial_params.T = T;
+            trial_params.mu = mu;
+            trial_params.Xstar = Xstar;
+            trial_params.verbose = verbose;
+            trial_params.init = init_method;  % Direct function handle
+            trial_params.trial_num = trial_num;
+            trial_params.use_parallel = use_parallel;
+            trial_params.onetrial = trial_func;
+            trial_params.alg_func = alg_func;
+            trial_params.nonlinear_func = nonlinear_func;
+            
+            % Run multiple trials using existing multipletrial function
+            [output, success_rate] = multipletrial(trial_params);
+            
+            % Store results from output
+            results.success_count(m_idx) = round(success_rate * trial_num);
+            results.avg_error(m_idx) = output(end);  % Final average error
+            results.std_error(m_idx) = 0;  % Not computed by multipletrial
+            results.avg_time(m_idx) = 0;   % Not computed by multipletrial
+            results.trial_errors{m_idx} = output;  % Store average error history
+            
+            fprintf('Success: %d/%d (%.1f%%), Final Error: %.4e\n', ...
+                    results.success_count(m_idx), trial_num, success_rate*100, ...
+                    results.avg_error(m_idx));
+            
+            % Save individual point data using helper function
+            save_experiment_point(mu_dir, r, m, mu, trial_num, ...
+                                 success_rate, output, T, init_method, add_flag);
+            
+            % Save intermediate results (summary format)
+            save(result_file, 'results');
+        end
+        
+        fprintf('  Results saved to: %s\n', result_file);
+    end
+end
+
+%% Cleanup
+fprintf('\n=== Experiment Complete ===\n');
+fprintf('Results saved in: %s\n', data_dir);
+
+% Clean up parallel pool if it was created
+if use_parallel
+    delete(gcp('nocreate'));
+    fprintf('Parallel pool closed.\n');
+end
+
+fprintf('Tensor phase diagram generation completed successfully!\n');

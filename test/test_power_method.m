@@ -1,0 +1,235 @@
+%%%%%%%%%% Simple Test for Power Method Initialization
+% Test power method initialization for low-rank phase retrieval
+
+clear; clc; close all;
+
+fprintf('=== Power Method Initialization Test ===\n\n');
+
+%% Problem Setup
+d1 = 20; d2 = 20;
+n = d1 * d2;
+m = 512;
+rank_true = 1;
+
+fprintf('Configuration: %dx%d matrix, rank=%d, m=%d measurements\n', d1, d2, rank_true, m);
+
+%% Generate Ground Truth Low-Rank Matrix
+U_true = randn(d1, rank_true);
+V_true = randn(d2, rank_true);
+Xstar = U_true * V_true';
+% Xstar = Xstar;
+Xstar = Xstar / norm(Xstar, 'fro');
+
+%% Generate Measurements
+A = randn(m, n);
+operator = struct();
+operator.A = @(X) A * X(:);
+operator.A_star = @(z) reshape(A' * z, [d1, d2]);
+
+% Phase retrieval: observe only magnitudes
+y = abs(operator.A(Xstar))/sqrt(m);
+
+Z = ones([d1,d2])/sqrt(d1*d2);
+AZ = operator.A(Z)/sqrt(m);
+%y_pre2 = y.^2 - abs(AZ).^2;
+
+fprintf('Measurement range: [%.3f, %.3f]\n\n', min(y), max(y));
+
+T_power = 200;
+
+%% Test 1: Power Method WITHOUT prefunc (standard y^2)
+fprintf('\n--- Test 1: Without prefunc (standard y^2) ---\n');
+params1 = struct();
+params1.projection = @(X) rank_projection(X, rank_true);
+params1.Xstar = Xstar;  % Add ground truth for error tracking
+params1.T_power = T_power;
+% No prefunc - uses default y^2
+
+tic;
+[Xl_init1, ~, history1] = initialize_power_method(y, operator, d1, d2, params1);
+t1 = toc;
+
+[error1, Xl_init1_aligned] = rectify_sign_ambiguity(Xl_init1, Xstar);
+rank1 = rank(Xl_init1, 1e-6);
+fprintf('  Time: %.3f sec\n', t1);
+fprintf('  Relative error: %.4e\n', error1);
+fprintf('  Recovered rank: %d (true: %d)\n', rank1, rank_true);
+
+%% Test 2: Different Z scaling factors (for prefunc sensitivity)
+fprintf('\n--- Test 2: Different Z scaling factors ---\n');
+z_scales = [0.1, 0.3, 0.5, 0.7, 1, 1.5, 2];
+errors_z = zeros(size(z_scales));
+times_z = zeros(size(z_scales));
+histories_z = cell(size(z_scales));
+
+for i = 1:length(z_scales)
+    Z_test = ones([d1, d2]) / sqrt(d1 * d2) * z_scales(i);
+    AZ_test = operator.A(Z_test) / sqrt(m);
+    
+    params_z = struct();
+    params_z.projection = @(X) rank_projection(X, rank_true);
+    params_z.Xstar = Xstar;
+    params_z.T_power = T_power;
+    params_z.prefunc = @(y) y.^2 - abs(AZ_test).^2;
+    
+    tic;
+    [Xl_z, ~, history_z] = initialize_power_method(y, operator, d1, d2, params_z);
+    times_z(i) = toc;
+    
+    [errors_z(i), ~] = rectify_sign_ambiguity(Xl_z, Xstar);
+    histories_z{i} = history_z;  % Store convergence history
+    
+    fprintf('  Z scale %.1f: Error = %.4e, Time = %.3f sec\n', z_scales(i), errors_z(i), times_z(i));
+end
+
+%% Test 3: Power Method WITH set_zero_outside prefunc
+fprintf('\n--- Test 3: With set_zero_outside prefunc ---\n');
+params4 = struct();
+params4.projection = @(X) rank_projection(X, rank_true);
+params4.Xstar = Xstar;  % Add ground truth for error tracking
+params4.T_power = T_power;
+params4.prefunc = @(y) set_zero_outside_range(y, m);  % Zero out outliers
+
+tic;
+[Xl_init4, ~, history4] = initialize_power_method(y, operator, d1, d2, params4);
+t4 = toc;
+
+[error4, Xl_init4_aligned] = rectify_sign_ambiguity(Xl_init4, Xstar);
+rank4 = rank(Xl_init4, 1e-6);
+fprintf('  Time: %.3f sec\n', t4);
+fprintf('  Relative error: %.4e\n', error4);
+fprintf('  Recovered rank: %d (true: %d)\n', rank4, rank_true);
+
+%% Comparison
+fprintf('\n--- Comparison ---\n');
+fprintf('  Standard vs Zero outside: %.2fx improvement (%.4e -> %.4e)\n', error1/error4, error1, error4);
+fprintf('  Zero outside benefit: %s\n', iif(error4 < error1, 'YES ✓', 'NO'));
+
+% Find best Z scaling
+[best_error_z, best_idx_z] = min(errors_z);
+best_z_scale = z_scales(best_idx_z);
+best_history_z = histories_z{best_idx_z};
+fprintf('  Best Z scale: %.1f (error: %.4e)\n', best_z_scale, best_error_z);
+
+% Find best overall method
+all_errors = [error1, error4, best_error_z];
+all_methods = {'Standard', 'Zero outside', sprintf('Best Z=%.1f', best_z_scale)};
+[best_overall_error, best_method_idx] = min(all_errors);
+fprintf('  Best overall method: %s (error: %.4e)\n', all_methods{best_method_idx}, best_overall_error);
+fprintf('  Best vs standard: %.2fx improvement\n', error1/best_overall_error);
+
+%% Compute result with best Z for visualization
+Z_best = ones([d1, d2]) / sqrt(d1 * d2) * best_z_scale;
+AZ_best = operator.A(Z_best) / sqrt(m);
+params_best = struct();
+params_best.projection = @(X) rank_projection(X, rank_true);
+params_best.Xstar = Xstar;
+params_best.T_power = T_power;
+params_best.prefunc = @(y) y.^2 - abs(AZ_best).^2;
+
+[Xl_best, ~, ~] = initialize_power_method(y, operator, d1, d2, params_best);
+[error_best, Xl_best_aligned] = rectify_sign_ambiguity(Xl_best, Xstar);
+
+%% Visualization
+figure('Position', [100, 100, 1400, 900]);
+
+% Plot 1: Convergence Curves
+subplot(2, 3, 1);
+hold on;
+if isfield(history1, 'errors') && ~isempty(history1.errors)
+    semilogy(1:length(history1.errors), history1.errors, 'b-', 'LineWidth', 2, 'DisplayName', 'Standard');
+end
+if isfield(history4, 'errors') && ~isempty(history4.errors)
+    semilogy(1:length(history4.errors), history4.errors, 'g-', 'LineWidth', 2, 'DisplayName', 'Zero outside');
+end
+if isfield(best_history_z, 'errors') && ~isempty(best_history_z.errors)
+    semilogy(1:length(best_history_z.errors), best_history_z.errors, 'm--', 'LineWidth', 3, 'DisplayName', sprintf('Best Z=%.1f', best_z_scale));
+end
+xlabel('Iteration');
+ylabel('Relative Error');
+title('Convergence Comparison');
+legend('show');
+grid on;
+
+% Plot 2: Error vs Z scaling
+subplot(2, 3, 2);
+semilogy(z_scales, errors_z, 'mo-', 'LineWidth', 2, 'MarkerSize', 8);
+hold on;
+semilogy([best_z_scale, best_z_scale], [min(errors_z), max(errors_z)], 'r--', 'LineWidth', 3);
+xlabel('Z Scaling Factor');
+ylabel('Final Relative Error');
+title('Error vs Z Scaling');
+grid on;
+
+% Plot 3: Method Comparison
+subplot(2, 3, 3);
+methods = {'Standard', 'Zero outside', sprintf('Best Z=%.1f', best_z_scale)};
+errors_comp = [error1, error4, best_error_z];
+bar(errors_comp);
+set(gca, 'XTickLabel', methods, 'YScale', 'log');
+ylabel('Relative Error');
+title('Method Comparison');
+grid on;
+xtickangle(45);
+
+% Plot 4: Ground Truth
+subplot(2, 3, 4);
+imagesc(Xstar);
+colorbar;
+title('Ground Truth');
+axis equal tight;
+
+% Plot 5: Standard Result
+subplot(2, 3, 5);
+imagesc(Xl_init1_aligned);
+colorbar;
+title(sprintf('Standard\nError: %.2e', error1));
+axis equal tight;
+
+% Plot 6: Best Z Result
+subplot(2, 3, 6);
+imagesc(Xl_best_aligned);
+colorbar;
+title(sprintf('Best Z=%.1f\nError: %.2e', best_z_scale, error_best));
+axis equal tight;
+
+
+
+%% Save Results
+fprintf('\n--- Saving Results ---\n');
+results = struct();
+results.Xstar = Xstar;
+results.standard = struct('Xl', Xl_init1_aligned, 'error', error1, 'rank', rank1, 'time', t1, 'history', history1);
+results.zero_outside = struct('Xl', Xl_init4_aligned, 'error', error4, 'rank', rank4, 'time', t4, 'history', history4);
+results.best_z = struct('Xl', Xl_best_aligned, 'error', error_best, 'z_scale', best_z_scale);
+results.z_sweep = struct('z_scales', z_scales, 'errors', errors_z, 'times', times_z, 'best_scale', best_z_scale, 'best_error', best_error_z);
+results.params = struct('d1', d1, 'd2', d2, 'm', m, 'rank_true', rank_true, 'T_power', T_power, 'Z_scale', 0.3);
+
+save('power_method_prefunc_results.mat', 'results');
+fprintf('Results saved to: power_method_prefunc_results.mat\n');
+
+fprintf('\n=== Test Complete ===\n');
+
+%% Helper Functions
+function X_proj = rank_projection(X, r)
+    % Project matrix to rank-r subspace using truncated SVD
+    if r <= 0 || r >= min(size(X))
+        X_proj = X;
+        return;
+    end
+    [U, S, V] = svd(X, 'econ');
+    r_effective = min(r, min(size(S)));
+    S_proj = S;
+    S_proj(r_effective+1:end, r_effective+1:end) = 0;
+    X_proj = U * S_proj * V';
+end
+
+function result = iif(condition, true_val, false_val)
+    if condition
+        result = true_val;
+    else
+        result = false_val;
+    end
+end
+
+
