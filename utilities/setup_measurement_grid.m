@@ -5,7 +5,6 @@ function [m_all, data_dir] = setup_measurement_grid(params)
     %            .d1, .d2      - Matrix dimensions
     %            .r_max        - Maximum rank for experiments
     %            .kappa        - Condition number
-    %            .r_star       - True rank
     %            .problem_flag - Problem type
     %            .alg_name     - Algorithm name
     %            .scale_num    - Number of scale levels
@@ -18,7 +17,6 @@ function [m_all, data_dir] = setup_measurement_grid(params)
     d2 = params.d2;
     r_max = params.r_max;
     kappa = params.kappa;
-    r_star = params.r_star;
     problem_flag = params.problem_flag;
     alg_name = params.alg_name;
     scale_num = params.scale_num;
@@ -64,8 +62,8 @@ function [m_all, data_dir] = setup_measurement_grid(params)
     end
     
     % Create data directory
-    data_file = sprintf('err_data_d1_%d_d2_%d_rmax_%d_kappa_%d_rstar_%d_prob_%d_alg_%s', ...
-        d1, d2, r_max, kappa, r_star, problem_flag, alg_name);
+    data_file = sprintf('err_data_d1_%d_d2_%d_rmax_%d_kappa_%d_prob_%d_alg_%s', ...
+        d1, d2, r_max, kappa, problem_flag, alg_name);
     data_dir = fullfile('data_f', data_file);
     if ~exist(data_dir, 'dir')
         mkdir(data_dir);
