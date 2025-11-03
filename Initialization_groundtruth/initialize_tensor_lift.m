@@ -77,7 +77,7 @@ function [X0, U0, history] = initialize_tensor_lift(y, operator, d1, d2, params)
         fprintf('Lifting operators to tensor space...\n');
     end
     
-    A_tensor = zeros(m, n*n);  % Each row is A_i ⊗ A_i flattened
+    A_tensor = zeros(m, n*n);  % Each row is A_i ⊗ A_i flattened, too large!
     
     % Extract measurement matrices from operator
     % We need to reconstruct A from the operator structure
@@ -114,8 +114,9 @@ function [X0, U0, history] = initialize_tensor_lift(y, operator, d1, d2, params)
     
     %% Tensor PGD Initialization
     % Initialize with random tensor
-    Xl_tensor_init = zeros(d, d, d, d);
-    % Xl_tensor_init = Xl_tensor_init / norm(Xl_tensor_init(:));
+    %Xl_tensor_init = zeros(d, d, d, d);
+    Xl_tensor_init = ones(d, d, d, d);
+    Xl_tensor_init = Xl_tensor_init / norm(Xl_tensor_init(:))*0.1;
     
     % Step size for tensor PGD
     mu = 0.1;

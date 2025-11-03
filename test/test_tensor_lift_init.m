@@ -23,13 +23,13 @@ fprintf('Problem size: d=%d, r=%d, m=%d\n', d, r, m);
 fprintf('Ground truth: ||X||_F=%.4f, rank=%d\n\n', norm(Xstar,'fro'), rank(Xstar));
 
 %% Create measurement operator
-A = randn(m, d*d) / sqrt(m);
+A = randn(m, d*d) ;
 operator = struct();
 operator.A = @(X) A * X(:);
 operator.A_star = @(y) reshape(A' * y, [d, d]);
 
 % Generate measurements
-y = abs(operator.A(Xstar));
+y = abs(operator.A(Xstar)) / sqrt(m);
 
 fprintf('Measurements: range=[%.4f, %.4f]\n\n', min(y), max(y));
 

@@ -19,26 +19,30 @@ fprintf('=== Low rank phase retrieval; Support Tensor-Lifted method; Phase Diagr
 
 trial_func = @onetrial_Mat;
 alg_func = @solve_PGD_amplitude;
-alg_name = 'MatsubGD';
+alg_name = 'MatsubGD_tensorSpectralinit';
 nonlinear_func = @(y) abs(y);  % Example nonlinear function for phase retrieval
- pre_func = @(y) set_zero_outside_range(y);
-%pre_func = [];
+
+pre_func = [];
 % Set initialization method directly with function handle
 
 % Options: @Initialization, @Initialization_random, @initialize_power_method
-init_method = @initialize_power_method;
-T_power = 20;
-%init_method = @initialize_tensor_lift;
+ pre_func = @(y) set_zero_outside_range_tensor(y);
+ init_method = @initialize_power_method;
+%T_power = 20;
+% T_power = 5;
+% init_method = @initialize_tensor_lift;
+init_method = @initialize_tensor_lift_tucker_spectral;
+T_power = 0; % No RGD operations
 % Matrix dimensions and problem setup
 d1 = 20;             % Matrix row dimension
 d2 = d1;             % Matrix column dimension (d1 x d2)
 kappa = 2;           % Condition number
-r_star = 2;          % Target rank for ground truth
+         % Target rank for ground truth
 r_max = 1;          % Maximum rank to test
-r_grid = 2:2:2;     % Rank values to test
+r_grid = 1:1:1;     % Rank values to test
 
 % Experiment parameters
-trial_num = 20;      % Number of trials per (r, m) pair
+trial_num = 5;      % Number of trials per (r, m) pair
 verbose = 0;         % 0: minimal output, 1: detailed output
 add_flag = 0;        % 0: overwrite existing data, 1: add to existing data
 T = 200;             % Number of iterations per trial
@@ -46,7 +50,7 @@ problem_flag = 2;
 use_parallel = false; % true: use parpool/parfor, false: sequential computation
 
 % Grid generation parameters
-scale_num = 3;       % Number of scale levels for measurement grid
+scale_num = 4;       % Number of scale levels for measurement grid
 
 % Step size parameters to test
 mu_list = [0.01];    % Step sizes for tensor PGD
@@ -62,7 +66,7 @@ fprintf('  Iterations per trial: %d\n', T);
 %% Generate Measurement Grid and Setup Directory
 fprintf('\n=== Setting up Measurement Grid ===\n');
 grid_params = struct('d1', d1, 'd2', d2, 'r_max', r_max, 'kappa', kappa, ...
-                     'r_star', r_star, 'problem_flag', problem_flag, ...
+                     'problem_flag', problem_flag, ...
                      'alg_name', alg_name, 'scale_num', scale_num);
 [m_all, data_dir] = setup_measurement_grid(grid_params);
 
@@ -127,8 +131,9 @@ for mu_idx = 1:length(mu_list)
         if d1 ~= d2
             warning('d1 != d2: generating non-square ground truth matrix');
         end
-        U_true = randn(d1, r_star);
-        Xstar = U_true * U_true';  % Symmetric rank-r_star matrix
+        U_true = randn(d1, r);
+        %Xstar = U_true * U_true';
+        Xstar = abs(U_true) * abs(U_true)';  % Symmetric rank-r_star matrix
         Xstar = Xstar / norm(Xstar, 'fro');
         
         % Loop over measurement counts
