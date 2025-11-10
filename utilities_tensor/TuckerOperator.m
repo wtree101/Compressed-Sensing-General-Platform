@@ -381,6 +381,54 @@ classdef TuckerOperator
             error('General adjoint operator not yet implemented');
         end
         
+        function T = kronecker_adjoint(obj, y)
+            % KRONECKER_ADJOINT Compute adjoint for Kronecker structure
+            %
+            % For 4th-order tensors with measurement model y_i = <A_i ⊗ A_i, T>:
+            % Computes T = Σ_i y_i * (A_i ⊗ A_i)
+            %
+            % This is the adjoint operator that forms the spectral initialization tensor
+            % without explicitly constructing the Kronecker products.
+            %
+            % Inputs:
+            %   y - Measurement vector (m × 1)
+            %
+            % Output:
+            %   T - 4th-order tensor (d×d×d×d) formed as sum of weighted Kronecker products
+            %
+            % Complexity: O(m * d⁴) time, O(d⁴) memory
+            % (Avoids forming m * d⁴ explicit Kronecker products)
+            %
+            % Example:
+            %   op = TuckerOperator(A_cells, 'order', 4);
+            %   T = op.kronecker_adjoint(y_processed);
+            
+            if obj.order ~= 4
+                error('kronecker_adjoint is currently only implemented for 4th-order tensors');
+            end
+            
+            d = obj.dims(1);
+            T = zeros(d, d, d, d);
+            
+            % Accumulate: T = Σ_i y_i * (A_i ⊗ A_i)
+            for i = 1:obj.m
+                if y(i) == 0
+                    continue;  % Skip zero measurements for efficiency
+                end
+                
+                Ai = obj.A_cells{i};  % d×d matrix
+                
+                % Compute A_i ⊗ A_i as 4th-order tensor efficiently
+                % Using outer product: vec(A_i) * vec(A_i)'
+                Ai_vec = Ai(:);                      % vec(A_i) as column (d² × 1)
+                AiAi_flat = Ai_vec * Ai_vec';        % Outer product (d² × d²)
+                AiAi = reshape(AiAi_flat, [d, d, d, d]);  % 4th-order tensor
+                
+                % Accumulate: T += y_i * (A_i ⊗ A_i)
+                T = T + y(i) * AiAi;
+            end
+        end
+        
         function display(obj)
             % Display operator information
             fprintf('TuckerOperator:\n');

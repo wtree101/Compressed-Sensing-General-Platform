@@ -11,10 +11,10 @@ fprintf('=== Test TuckerTensor.initialize_spectral Symmetry ===\n\n');
 %% Test Parameters
 d = 20;              % Dimension
 r = 2;               % Tucker rank
-m = 800;             % Number of measurements
+m = 300;             % Number of measurements
 use_debug = true;    % Enable debug mode for detailed output
 
-rng(42);  % For reproducibility
+%rng(42);  % For reproducibility
 
 fprintf('Test Configuration:\n');
 fprintf('  Dimension d: %d\n', d);
@@ -25,6 +25,7 @@ fprintf('  Debug mode: %s\n\n', mat2str(use_debug));
 %% Generate Ground Truth (symmetric rank-r matrix)
 fprintf('Generating ground truth...\n');
 U_true = randn(d, r);
+V_true = randn(d, r);
 Xstar = U_true * U_true';  % Symmetric matrix
 Xstar = Xstar / norm(Xstar, 'fro');
 fprintf('  Ground truth: %dx%d symmetric matrix, rank=%d\n\n', d, d, r);
@@ -40,8 +41,8 @@ operator.A_star = @(y) reshape(A' * y, [d, d]);
 A_cells = cell(m, 1);
 for i = 1:m
     Ai = reshape(A(i, :), [d, d]);
-    %A_cells{i} = (Ai + Ai') / 2;  % Symmetrize
-    A_cells{i} = Ai;
+    A_cells{i} = (Ai + Ai') / 2;  % Symmetrize
+    %A_cells{i} = Ai;
 end
 
 spectral_operator = struct();
@@ -226,103 +227,79 @@ else
 end
 
 %% Method 2: Extract matrix using Tucker decomposition structure
-fprintf('\n--- Method 2: Tucker Decomposition (U * C_root * U^T) ---\n');
+fprintf('\n--- Method 2: Diagonal Core Extraction (Tucker structure) ---\n');
 
-% Since T = X ⊗ X and X = U * C_root * U^T (for symmetric case)
-% The core tensor G should have structure related to C_root ⊗ C_root
-%
-% Strategy:
-% 1. Contract G with U^T on modes 3 and 4 to eliminate those modes
-% 2. This gives us a (r × r × d × d) tensor
-% 3. Further process to extract C_root
+% Step 1: Extract diagonal part of core tensor G
+% Form matrix G_2(i,j) = G(i,i,j,j) (ignore non-diagonal parts)
+fprintf('Step 1: Extracting diagonal part of core tensor\n');
+fprintf('  Forming G_2(i,j) = G(i,i,j,j)...\n');
 
-U = U_cell{1};  % All factors are the same due to symmetry
+r_val = size(G_init, 1);  % Tucker rank
+G_2 = zeros(r_val, r_val);
 
-fprintf('Extracting C_root from core tensor G...\n');
-
-% Method 2a: Direct extraction assuming G = C_root ⊗ C_root
-% For symmetric Tucker: T = G ×₁ U ×₂ U ×₃ U ×₄ U
-% If X = U * C_root * U^T, then ideally G should relate to C_root ⊗ C_root
-
-if isscalar(G_init)
-    % Special case: scalar core (rank-1)
-    C_root = sqrt(abs(G_init)) * eye(1);
-    fprintf('  Scalar core: G = %.6f\n', G_init);
-    fprintf('  C_root: %.6f (scalar)\n', C_root);
-else
-    % General case: extract C_root from G
-    % One approach: matricize G and extract square root structure
-    
-    % Matricize G to (r² × r²)
-    G_mat = reshape(G_init, [r*r, r*r]);
-    fprintf('  G matricized: %dx%d matrix\n', r*r, r*r);
-    fprintf('  G_mat norm: %.6f\n', norm(G_mat, 'fro'));
-    
-    % Symmetrize
-    G_mat = (G_mat + G_mat') / 2;
-    
-    % Extract leading eigenvector/eigenvalue
-    [V_g, D_g] = eig(G_mat);
-    [~, idx_g] = max(abs(diag(D_g)));
-    v_g = V_g(:, idx_g);
-    lambda_g = D_g(idx_g, idx_g);
-    
-    fprintf('  Leading eigenvalue of G_mat: %.6f\n', lambda_g);
-    
-    % Reshape to get C_root (r × r)
-    % The eigenvector represents vec(C_root ⊗ C_root)
-    % So we need to extract C_root from this
-    
-    % Simple approach: reshape and take matrix square root
-    C_temp = reshape(v_g * sqrt(abs(lambda_g)), [r, r]);
-    
-    % Since we want C_root such that C_temp ≈ C_root ⊗ C_root (as vector)
-    % For rank-1 case, C_root is approximately the square root
-    % For general case, we can use eigendecomposition
-    
-    C_temp = (C_temp + C_temp') / 2;  % Symmetrize
-    
-    % Extract C_root via eigendecomposition
-    [V_c, D_c] = eig(C_temp);
-    [~, idx_c] = max(abs(diag(D_c)));
-    
-    % For rank-1 Tucker: C_root ≈ sqrt(leading_eigenvalue) * v * v'
-    % For higher rank: take leading eigenpair
-    if r == 1
-        C_root = sqrt(abs(D_c(1,1)));
-        fprintf('  C_root (rank-1): %.6f\n', C_root);
-    else
-        % Take top eigenvalues and form low-rank approximation
-        [~, sort_idx] = sort(abs(diag(D_c)), 'descend');
-        D_c_sorted = D_c(sort_idx, sort_idx);
-        V_c_sorted = V_c(:, sort_idx);
-        
-        % Form C_root from leading eigenpairs
-        % Apply fourth root since G ≈ (C_root ⊗ C_root)
-        D_c_root = diag(nthroot(abs(diag(D_c_sorted)), 4) .* sign(diag(D_c_sorted)));
-        C_root = V_c_sorted * D_c_root * V_c_sorted';
-        
-        fprintf('  C_root extracted: %dx%d matrix, norm=%.6f\n', r, r, norm(C_root, 'fro'));
+for i = 1:r_val
+    for j = 1:r_val
+        G_2(i, j) = G_init(i, i, j, j);
     end
 end
 
-% Form X_method2 = U * C_root * U^T
-if isscalar(C_root)
-    X_method2 = U * C_root * U';
+fprintf('  G_2 size: %dx%d\n', size(G_2, 1), size(G_2, 2));
+fprintf('  G_2 norm: %.6f\n', norm(G_2, 'fro'));
+
+% Step 2: Check symmetry of G_2
+fprintf('\nStep 2: Checking symmetry of G_2\n');
+G_2_symmetric = (G_2 + G_2') / 2;
+G_2_asymmetric = norm(G_2 - G_2_symmetric, 'fro');
+fprintf('  ||G_2 - G_2^T||_F = %.6e\n', G_2_asymmetric);
+
+if G_2_asymmetric < 1e-10
+    fprintf('  ✓ G_2 is symmetric\n');
 else
-    X_method2 = U * C_root * U';
+    fprintf('  ✗ G_2 is NOT symmetric (asymmetry: %.6e)\n', G_2_asymmetric);
+    fprintf('  Symmetrizing G_2 for computation...\n');
+    G_2 = G_2_symmetric;
 end
 
-% Normalize and symmetrize
-X_method2 = X_method2 / norm(X_method2, 'fro');
+% Step 3: Compute spectral decomposition of G_2
+fprintf('\nStep 3: Computing spectral decomposition of G_2\n');
+[V_G2, D_G2] = eig(G_2);
+[eigenvalues_sorted, idx_sort] = sort(diag(D_G2), 'descend');
+
+fprintf('  Eigenvalues of G_2 (sorted):\n');
+for k = 1:min(r_val, 3)
+    fprintf('    λ{%d} = %.6e\n', k, eigenvalues_sorted(k));
+end
+
+% Step 4: Extract eigenvector corresponding to largest eigenvalue
+fprintf('\nStep 4: Extracting eigenvector of largest eigenvalue\n');
+lambda_max = eigenvalues_sorted(1);
+v_G2_max = V_G2(:, idx_sort(1));
+
+fprintf('  Largest eigenvalue: λ_max = %.6e\n', lambda_max);
+fprintf('  Eigenvector norm: %.6f\n', norm(v_G2_max));
+
+% Step 5: Reconstruct matrix from Tucker factors and eigenvector
+fprintf('\nStep 5: Reconstructing matrix from Tucker factors\n');
+% X = U₁ * v * U₁^T (since U₁ = U₂ = U₃ = U₄ for symmetric case)
+U_factor = U_cell{1};
+X_method2 = U_factor * diag(v_G2_max) * U_factor';
+
+% Ensure symmetry
 X_method2 = (X_method2 + X_method2') / 2;
 
-fprintf('  X_method2: %dx%d matrix, norm=%.6f\n', d, d, norm(X_method2, 'fro'));
-fprintf('  X_method2 rank: %d\n', rank(X_method2, 1e-6));
+fprintf('  Reconstructed matrix size: %dx%d\n', size(X_method2, 1), size(X_method2, 2));
+fprintf('  Reconstructed matrix norm: %.6f\n', norm(X_method2, 'fro'));
+
+% Normalize
+X_method2_norm = norm(X_method2, 'fro');
+if X_method2_norm > 0
+    X_method2 = X_method2 / X_method2_norm;
+end
 
 % Compute reconstruction error for Method 2
 [recon_error_method2, X_method2] = rectify_sign_ambiguity(X_method2, Xstar);
 fprintf('  Reconstruction error: %.6e\n', recon_error_method2);
+fprintf('  Reconstruction rank: %d\n', rank(X_method2, 1e-6));
 
 if recon_error_method2 < 0.1
     fprintf('  ✓ Good reconstruction\n');
@@ -330,6 +307,16 @@ elseif recon_error_method2 < 0.5
     fprintf('  ~ Moderate reconstruction\n');
 else
     fprintf('  ✗ Poor reconstruction\n');
+end
+
+% Additional diagnostic: print G_2 matrix
+fprintf('\nDiagnostic: G_2 matrix (first %d×%d):\n', min(r_val, 5), min(r_val, 5));
+for i = 1:min(r_val, 5)
+    fprintf('  ');
+    for j = 1:min(r_val, 5)
+        fprintf('%8.4f ', G_2(i, j));
+    end
+    fprintf('\n');
 end
 
 %% Compare the two methods

@@ -150,18 +150,9 @@ classdef TuckerTensor
                     [obj.U, obj.G] = obj.initialize_spectral(p.Results.operator, p.Results.y, p.Results.m, ...
                                                              'symmetric', obj.is_symmetric);
                 else
-                    % For non-spectral initialization
-                    if obj.is_symmetric
-                        % Symmetric case: all modes use same factor
-                        obj.U{1} = obj.initialize_factor(1, p.Results.init_method);
-                        for i = 2:obj.order
-                            obj.U{i} = obj.U{1};
-                        end
-                    else
-                        % Non-symmetric case: each mode has distinct factor
-                        for i = 1:obj.order
-                            obj.U{i} = obj.initialize_factor(i, p.Results.init_method);
-                        end
+                    obj.U{1} = obj.initialize_factor(1, p.Results.init_method);
+                    for i = 2:obj.order
+                        obj.U{i} = obj.U{1};
                     end
                 end
             end
@@ -251,7 +242,7 @@ classdef TuckerTensor
             % Parse optional arguments
             p = inputParser;
             addParameter(p, 'pre_func', @(y) y, @(f) isa(f, 'function_handle'));
-            addParameter(p, 'symmetric', true, @(x) islogical(x) || isnumeric(x));
+            addParameter(p, 'symmetric', obj.is_symmetric, @(x) islogical(x) || isnumeric(x));
             parse(p, varargin{:});
             pre_func = p.Results.pre_func;
             use_symmetric = p.Results.symmetric;
@@ -289,31 +280,34 @@ classdef TuckerTensor
                         n_kept, m, n_kept/m*100);
             end
             
-            % Step 1: Form T = sum_i y_i * (Ai ⊗ Ai) directly as (d×d×d×d) array
-            % Avoid forming md^4 A_tensor array
+            % Step 1: Form T = sum_i y_i * (Ai ⊗ Ai) using TuckerOperator
             if obj.debug
                 fprintf('[Spectral Init] Forming tensor T = sum_i y_i * (Ai ⊗ Ai)...\n');
             end
-            T = zeros(d, d, d, d);
+            
+            % Check if operator is already a TuckerOperator, otherwise create one
+            if isa(operator, 'TuckerOperator')
+                tucker_op = operator;
+                if obj.debug
+                    fprintf('[Spectral Init] Using existing TuckerOperator\n');
+                end
+            else
+                % Create TuckerOperator from A_cells
+                tucker_op = TuckerOperator(operator.A_cells, 'order', obj.order, ...
+                                           'symmetric', false, 'operator_type', 'kronecker');
+                if obj.debug
+                    fprintf('[Spectral Init] Created new TuckerOperator from A_cells\n');
+                end
+            end
+            
+            % Scale measurements and apply Kronecker adjoint
+            y_scaled = y_processed / sqrt(m);
+            T = tucker_op.kronecker_adjoint(y_scaled);
+            
             mem_T = numel(T) * 8 / 1024;  % KB
             if obj.debug
-                fprintf('[Spectral Init] Memory: T accumulator (%dx%dx%dx%d) = %.2f KB\n', ...
+                fprintf('[Spectral Init] Memory: T (%dx%dx%dx%d) = %.2f KB\n', ...
                         d, d, d, d, mem_T);
-            end
-            
-            for i = 1:m
-                Ai = operator.A_cells{i};  % d×d matrix
-                % Compute Ai ⊗ Ai as 4th-order tensor efficiently
-                % Use outer product: vec(Ai) * vec(Ai)'
-                Ai_vec = Ai(:);              % vec(Ai) as column vector (d² × 1)
-                AiAi_flat = Ai_vec * Ai_vec'; % (d² × d²) matrix (outer product)
-                AiAi = reshape(AiAi_flat, [d, d, d, d]);  % Reshape to 4th-order tensor
-                
-                % Accumulate: T += y_processed_i * (Ai ⊗ Ai)
-                T = T + y_processed(i) * AiAi / sqrt(m);
-            end
-            
-            if obj.debug
                 fprintf('[Spectral Init] Tensor T formed: norm=%.6f\n', norm(T(:)));
             end
             

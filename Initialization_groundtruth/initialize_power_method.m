@@ -91,3 +91,13 @@ X0 = reshape(v, [d1, d2]);
 U0 = [];  % Empty for compatibility
 
 end
+
+%% Helper Function
+function value = get_param(params, field, default)
+    % Get parameter from struct with default value
+    if isfield(params, field)
+        value = params.(field);
+    else
+        value = default;
+    end
+end
