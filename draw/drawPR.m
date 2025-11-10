@@ -1,5 +1,5 @@
 % Load data
-dist = 'data_f/err_data_d1_40_d2_40_rmax_5_kappa_2_prob_2_alg_MatsubGD_powerinit/';
+dist = 'data_f/err_data_d1_100_d2_100_rmax_5_kappa_2_prob_2_alg_MatsubGD_tensorSpectralinit/';
 %dist = 'data3/err_data_d1_60_d2_60_rmax_20_kappa_2_rstar_8/';
 data_dir = [dist,'/mu_0.0100']; % Replace with your path
 %data_dir = [dist]; % Replace with your path

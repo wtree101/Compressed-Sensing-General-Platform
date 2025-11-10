@@ -11,7 +11,7 @@ clear; clc;
 fprintf('=== Test initialize_tensor_lift_tucker with Spectral Init ===\n\n');
 
 %% Setup
-d = 40; r = 1; m = 500;
+d = 100; r = 1; m = 1000;
 use_preprocessing = true;  % Test with preprocessing
 rng(42);
 
@@ -39,7 +39,7 @@ params1 = struct();
 params1.T_power = 1;  % No RGD iterations, just spectral init
 params1.r = r;
 params1.Xstar = Xstar;
-params1.verbose = false;  % verbose=true automatically enables debug mode
+params1.verbose = true;  % verbose=true automatically enables debug mode
 params1.symmetric = true;
 params1.init_method = 'spectral';
 

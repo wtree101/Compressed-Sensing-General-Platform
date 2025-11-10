@@ -147,11 +147,21 @@ classdef TuckerTensor
                 
                 % Handle spectral initialization
                 if strcmpi(p.Results.init_method, 'spectral')
-                    [obj.U, obj.G] = obj.initialize_spectral(p.Results.operator, p.Results.y, p.Results.m);
+                    [obj.U, obj.G] = obj.initialize_spectral(p.Results.operator, p.Results.y, p.Results.m, ...
+                                                             'symmetric', obj.is_symmetric);
                 else
-                    obj.U{1} = obj.initialize_factor(1, p.Results.init_method);
-                    for i = 2:obj.order
-                        obj.U{i} = obj.U{1};
+                    % For non-spectral initialization
+                    if obj.is_symmetric
+                        % Symmetric case: all modes use same factor
+                        obj.U{1} = obj.initialize_factor(1, p.Results.init_method);
+                        for i = 2:obj.order
+                            obj.U{i} = obj.U{1};
+                        end
+                    else
+                        % Non-symmetric case: each mode has distinct factor
+                        for i = 1:obj.order
+                            obj.U{i} = obj.initialize_factor(i, p.Results.init_method);
+                        end
                     end
                 end
             end
@@ -218,6 +228,8 @@ classdef TuckerTensor
             %              'pre_func' - Preprocessing function handle applied to y before forming T
             %                           Default: @(y) y (identity, no preprocessing)
             %                           Example: @(y) set_zero_outside_range(y)
+            %              'symmetric' - Boolean, use same factor for all modes (default: true)
+            %                            If false, uses all extracted factors from HOSVD
             %
             % Outputs:
             %   U_cell   - Cell array of factor matrices
@@ -226,7 +238,7 @@ classdef TuckerTensor
             % Steps:
             %   0. Apply pre_func to y (if provided)
             %   1. Form T = sum_i y_i * (Ai ⊗ Ai) directly as (d×d×d×d) array
-            %   2. Perform HOSVD on T to get U{1}...U{4}
+            %   2. Perform HOSVD on T to get U{1}...U{N}
             %   3. Compute core G = T ×₁ U₁' ×₂ U₂' ×₃ U₃' ×₄ U₄'
             %
             % Memory usage: d^4 (avoids forming md^4 A_tensor array)
@@ -234,12 +246,15 @@ classdef TuckerTensor
             %
             % Example:
             %   [U_cell, G] = obj.initialize_spectral(op, y, m, 'pre_func', @set_zero_outside_range);
+            %   [U_cell, G] = obj.initialize_spectral(op, y, m, 'symmetric', false);
             
             % Parse optional arguments
             p = inputParser;
             addParameter(p, 'pre_func', @(y) y, @(f) isa(f, 'function_handle'));
+            addParameter(p, 'symmetric', true, @(x) islogical(x) || isnumeric(x));
             parse(p, varargin{:});
             pre_func = p.Results.pre_func;
+            use_symmetric = p.Results.symmetric;
             
             % Validate inputs
             if isempty(operator) || ~isfield(operator, 'A_cells')
@@ -322,21 +337,43 @@ classdef TuckerTensor
                 fprintf('[Spectral Init] HOSVD complete: extracted %d factor matrices\n', length(U_cells));
             end
             
-            % For symmetric tensor, use first factor for all modes
-            U_factor = U_cells{1};
-            mem_U_factor = numel(U_factor) * 8 / 1024;  % KB
-            if obj.debug
-                fprintf('[Spectral Init] Memory: U_factor (%dx%d) = %.2f KB\n', ...
-                        size(U_factor,1), size(U_factor,2), mem_U_factor);
-            end
-            
-            U_cell = cell(1, obj.order);
-            for i = 1:obj.order
-                U_cell{i} = U_factor;
-            end
-            mem_U_cell = obj.order * mem_U_factor;
-            if obj.debug
-                fprintf('[Spectral Init] Memory: U_cell (%d factors) = %.2f KB\n', obj.order, mem_U_cell);
+            % Handle symmetric vs non-symmetric initialization
+            if use_symmetric
+                % For symmetric tensor, use first factor for all modes
+                U_factor = U_cells{1};
+                mem_U_factor = numel(U_factor) * 8 / 1024;  % KB
+                if obj.debug
+                    fprintf('[Spectral Init] Memory: U_factor (%dx%d) = %.2f KB\n', ...
+                            size(U_factor,1), size(U_factor,2), mem_U_factor);
+                end
+                
+                U_cell = cell(1, obj.order);
+                for i = 1:obj.order
+                    U_cell{i} = U_factor;
+                end
+                mem_U_cell = obj.order * mem_U_factor;
+                if obj.debug
+                    fprintf('[Spectral Init] Memory: U_cell (%d factors, SYMMETRIC) = %.2f KB\n', obj.order, mem_U_cell);
+                end
+            else
+                % For non-symmetric tensor, use all extracted factors
+                U_cell = U_cells;
+                mem_U_cell = 0;
+                if obj.debug
+                    fprintf('[Spectral Init] Using non-symmetric factors from HOSVD:\n');
+                end
+                for i = 1:length(U_cell)
+                    mem_i = numel(U_cell{i}) * 8 / 1024;  % KB
+                    mem_U_cell = mem_U_cell + mem_i;
+                    if obj.debug
+                        fprintf('[Spectral Init]   U_cell{%d}: %dx%d = %.2f KB\n', ...
+                                i, size(U_cell{i},1), size(U_cell{i},2), mem_i);
+                    end
+                end
+                if obj.debug
+                    fprintf('[Spectral Init] Memory: U_cell (%d factors, NON-SYMMETRIC) = %.2f KB\n', ...
+                            length(U_cell), mem_U_cell);
+                end
             end
             
             % Step 3: Compute core tensor by projecting T onto U factors
@@ -346,8 +383,27 @@ classdef TuckerTensor
             end
             
             G_init = T;
-            for mode = 1:obj.order
-                G_init = tensor_mode_product(G_init, U_factor', mode);
+            if use_symmetric
+                % For symmetric case, use same factor for all modes
+                U_factor = U_cell{1};
+                if obj.debug
+                    fprintf('[Spectral Init]   Projecting with same factor on all %d modes\n', obj.order);
+                end
+                for mode = 1:obj.order
+                    G_init = tensor_mode_product(G_init, U_factor', mode);
+                end
+            else
+                % For non-symmetric case, use corresponding factor for each mode
+                if obj.debug
+                    fprintf('[Spectral Init]   Projecting with distinct factors on each mode:\n');
+                end
+                for mode = 1:obj.order
+                    if obj.debug
+                        fprintf('[Spectral Init]     Mode %d: projecting with U{%d} (%dx%d)\n', ...
+                                mode, mode, size(U_cell{mode},1), size(U_cell{mode},2));
+                    end
+                    G_init = tensor_mode_product(G_init, U_cell{mode}', mode);
+                end
             end
             
             mem_G_init = numel(G_init) * 8 / 1024;  % KB
@@ -365,6 +421,13 @@ classdef TuckerTensor
                 mem_d4 = d^4 * 8 / 1024 / 1024;  % MB (current approach)
                 fprintf('[Spectral Init] Memory saved vs md^4 approach: %.2f MB vs %.2f MB (%.1fx reduction)\n', ...
                         mem_d4, mem_md4, mem_md4 / max(mem_d4, 1e-6));
+                
+                % Initialization summary
+                if use_symmetric
+                    fprintf('[Spectral Init] === Spectral initialization complete (SYMMETRIC) ===\n');
+                else
+                    fprintf('[Spectral Init] === Spectral initialization complete (NON-SYMMETRIC) ===\n');
+                end
             end
         end
         
