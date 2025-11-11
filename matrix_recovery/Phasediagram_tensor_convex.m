@@ -45,26 +45,32 @@ pre_func = [];  % Preprocessing function (optional, e.g., @set_zero_outside_rang
 % 1. Power method:               @initialize_power_method
 % 2. Tensor lift (basic):        @initialize_tensor_lift
 % 3. Tucker spectral:            @initialize_tensor_lift_tucker_spectral
-% 4. Tensor nuclear norm (TNN):  @initialize_tensor_nuclear_norm
-% 5. Random:                     @Initialization_random
+% 4. Tensor nuclear norm v1:     @initialize_tensor_nuclear_norm
+% 5. Tensor nuclear norm v2:     @initialize_tensor_nuclear_norm_v2 (NEW - separate penalties)
+% 6. Random:                     @Initialization_random
 
 % Choose one initialization method:
 % init_method = @initialize_tensor_lift_tucker_spectral;
 % alg_name = 'MatsubGD_tensorSpectralinit';
 % T_power = 20;  % Number of initialization steps/iterations
 
-% % Alternative: Tensor Nuclear Norm initialization
-init_method = @initialize_tensor_nuclear_norm;
-alg_name = 'MatsubGD_TNNinit';
-T_power = 20;  % Number of TNN initialization iterations
+% Tensor Nuclear Norm v2 initialization (with separate penalty parameters)
+init_method = @initialize_tensor_nuclear_norm_v2;
+alg_name = 'MatsubGD_TNNv2init';
+T_power = 100;  % Number of TNN initialization iterations
 
-%Alternative: Power method initialization
+% Alternative: Tensor Nuclear Norm v1 initialization
+% init_method = @initialize_tensor_nuclear_norm;
+% alg_name = 'MatsubGD_TNNinit';
+% T_power = 100;  % Number of TNN initialization iterations
+
+% Alternative: Power method initialization
 % init_method = @initialize_power_method;
 % alg_name = 'MatsubGD_powerinit';
 % T_power = 20;  % Number of power method iterations
 
 % Matrix dimensions and problem setup
-d1 = 40;             % Matrix row dimension
+d1 = 20;             % Matrix row dimension
 d2 = d1;             % Matrix column dimension (d1 x d2)
 kappa = 2;           % Condition number
          % Target rank for ground truth
@@ -72,7 +78,7 @@ r_max = 5;          % Maximum rank to test
 r_grid = 1:1:5;     % Rank values to test
 
 % Experiment parameters
-trial_num = 20;       % Number of trials per (r, m) pair
+trial_num = 3;       % Number of trials per (r, m) pair
 verbose = 0;         % 0: minimal output, 1: detailed output
 add_flag = 0;        % 0: overwrite existing data, 1: add to existing data
 T = 200;             % Number of local refinement iterations
@@ -82,10 +88,15 @@ use_parallel = false; % true: use parpool/parfor, false: sequential computation
 %% Initialization-Specific Parameters
 % T_power: General parameter for number of initialization steps/iterations
 %   - For Tucker spectral: number of RGD iterations on Tucker manifold
-%   - For Tensor nuclear norm: number of ADMM iterations
+%   - For Tensor nuclear norm v1/v2: number of ADMM iterations
 %   - For Power method: number of power iterations
 %
 % Note: T_power is set above with the initialization method selection
+
+% V2-specific penalty parameters (for initialize_tensor_nuclear_norm_v2)
+rho_k = 0.1;         % Penalty parameter for unfolding constraints W_k = T_(k)
+rho_m = 1.0;         % Penalty parameter for measurement constraints
+lambda_vec = [1, 1, 1, 1];  % Weight vector for mode nuclear norms
 
 % Grid generation parameters
 scale_num = 4;       % Number of scale levels for measurement grid
@@ -98,9 +109,15 @@ fprintf('Configuration:\n');
 fprintf('  Matrix size: %dx%d\n', d1, d2);
 fprintf('  Rank grid: [%d, %d] with %d values\n', min(r_grid), max(r_grid), length(r_grid));
 fprintf('  Trials per point: %d\n', trial_num);
-fprintf('  Iterations per trial: %d\n', T);
+fprintf('  Initialization iterations (T_power): %d\n', T_power);
+fprintf('  Local refinement iterations (T): %d\n', T);
 fprintf('  Step sizes (mu): %d values\n', length(mu_list));
-% fprintf('  Initialization: %s\n', func2str(init_method));
+fprintf('  Initialization method: %s\n', func2str(init_method));
+fprintf('  Algorithm name: %s\n', alg_name);
+if strcmp(func2str(init_method), 'initialize_tensor_nuclear_norm_v2')
+    fprintf('  V2 Parameters: rho_k=%.2e, rho_m=%.2e, lambda=[%.2f,%.2f,%.2f,%.2f]\n', ...
+            rho_k, rho_m, lambda_vec(1), lambda_vec(2), lambda_vec(3), lambda_vec(4));
+end
 
 %% Generate Measurement Grid and Setup Directory
 fprintf('\n=== Setting up Measurement Grid ===\n');
@@ -220,9 +237,15 @@ for mu_idx = 1:length(mu_list)
             % Additional parameters for specific initialization methods
             % These are passed to the initialization function via params struct
             trial_params.max_iter = T_power;  % For tensor nuclear norm: ADMM iterations
-            trial_params.lambda = 1.0;        % For tensor nuclear norm: regularization
-            trial_params.rho = 0.1;           % For tensor nuclear norm: ADMM penalty
             trial_params.normalize = true;    % Normalize initialization output
+            
+            % V2-specific parameters (for initialize_tensor_nuclear_norm_v2)
+            trial_params.rho_k = rho_k;       % Penalty for unfolding constraints
+            trial_params.rho_m = rho_m;       % Penalty for measurement constraints
+            trial_params.lambda = lambda_vec; % Mode nuclear norm weights
+            
+            % V1-specific parameters (for initialize_tensor_nuclear_norm)
+            trial_params.rho = 0.1;           % For TNN v1: single ADMM penalty
             % Run multiple trials using existing multipletrial function
             [output, success_rate] = multipletrial(trial_params);
             

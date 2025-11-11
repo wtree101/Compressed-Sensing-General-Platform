@@ -85,7 +85,9 @@ tol = p.Results.tol;
 lambda = p.Results.lambda;
 rho = p.Results.rho;
 verbose = p.Results.verbose;
+
 X_true = p.Results.X_true;
+
 use_admm = p.Results.use_admm;
 w_nuclear = p.Results.nuclear_weight(:)';
 target_rank = p.Results.rank;
@@ -217,7 +219,7 @@ for iter = 1:max_iter
         Ai_tensor = compute_Ai_tensor(operator.A_cells{i});
         constraint_viol = constraint_viol + (y(i) - tensor_inner_product(Ai_tensor, T) / sqrt(m))^2;
     end
-    constraint_viol = sqrt(constraint_viol / m);
+    
     
     % Store iteration info
     info.obj_values(iter) = obj_val;
@@ -252,8 +254,7 @@ for iter = 1:max_iter
             primal_residual = primal_residual + norm(T_hat_k - Z{k}, 'fro')^2;
             dual_residual = dual_residual + rho^2 * norm(Z{k} - Z_prev{k}, 'fro')^2;
         end
-        primal_residual = sqrt(primal_residual);
-        dual_residual = sqrt(dual_residual);
+       
         
         % Adaptive rho (residual balancing)
         if adapt_rho
@@ -278,10 +279,14 @@ for iter = 1:max_iter
         
         if verbose >= 2 || (verbose >= 1 && mod(iter, 10) == 0)
             fprintf('Iter %4d: obj=%.6e, |r_p|=%.2e, |r_d|=%.2e, |constr|=%.2e, rho=%.2f', ...
-                    iter, obj_val, primal_residual, dual_residual, constraint_viol, rho);
+                iter, obj_val, primal_residual, dual_residual, constraint_viol, rho);
             if ~isempty(X_true)
-                fprintf(', err=%.6e', info.errors(iter));
+            fprintf(', err=%.6e', info.errors(iter));
             end
+            if exist('X_current', 'var')
+            fprintf(', ||X_current||=%.2e', norm(X_current, 'fro'));
+            end
+            fprintf(', ||T||=%.2e', norm(T(:)));
             fprintf('\n');
         end
         
@@ -379,10 +384,10 @@ end
 
 %% Helper Functions
 
-function T_new = update_T_least_squares(T, Z, U, A_cells, y, rho, lambda, tensor_dims, m, pcg_tol, pcg_maxit, use_precond)
+function T_new = update_T_least_squares(T, Z, U, A_cells, y, rho, tensor_dims, m, pcg_tol, pcg_maxit, use_precond)
     % Update T by solving least squares problem
     % min_T  (rho/2) * sum_k ||T_(k) - Z_k + U_k||_F^2
-    %        + (lambda/2) * sum_i (y_i - <A_i, T> / sqrt(m))^2
+    %        + (rho /2) * sum_i (y_i - <A_i, T> / sqrt(m))^2
     %
     % This is solved using conjugate gradient with optional scalar preconditioner
     
@@ -390,13 +395,13 @@ function T_new = update_T_least_squares(T, Z, U, A_cells, y, rho, lambda, tensor
     T_vec = T(:);
     
     % Define linear operator: A(T) for ADMM objective
-    A_op = @(x) apply_T_operator(x, A_cells, Z, U, rho, lambda, tensor_dims, m);
+    A_op = @(x) apply_T_operator(x, A_cells, Z, U, rho, tensor_dims, m);
     
     % Define right-hand side
-    b = compute_rhs(Z, U, A_cells, y, rho, lambda, tensor_dims, m);
+    b = compute_rhs(Z, U, A_cells, y, rho, tensor_dims, m);
     
     % Optionally use cheap scalar Jacobi preconditioner: M ≈ sigma*I
-    % sigma ≈ rho*4 + (lambda/m) * mean_i(||Ai||_F^2)
+    % sigma ≈ rho*4 + (rho/m) * mean_i(||Ai||_F^2)
     % This stabilizes PCG with minimal overhead
     if use_precond
         if ~isempty(A_cells) && length(A_cells) > 0
@@ -407,7 +412,7 @@ function T_new = update_T_least_squares(T, Z, U, A_cells, y, rho, lambda, tensor
                 Ai_frob2_sample = Ai_frob2_sample + norm(A_cells{i}, 'fro')^2;
             end
             mean_Ai_frob2 = Ai_frob2_sample / n_sample;
-            sigma = rho * 4 + (lambda / m) * mean_Ai_frob2;
+            sigma = rho * 4 + (rho / m) * mean_Ai_frob2;
         else
             sigma = rho * 4;  % fallback
         end
@@ -421,23 +426,23 @@ function T_new = update_T_least_squares(T, Z, U, A_cells, y, rho, lambda, tensor
     T_new = reshape(T_vec_new, tensor_dims);
 end
 
-function y_out = apply_T_operator(x, A_cells, ~, ~, rho, lambda, tensor_dims, m)
+function y_out = apply_T_operator(x, A_cells, ~, ~, rho, tensor_dims, m)
     % Apply the linear operator for T update
     T = reshape(x, tensor_dims);
     
     % ADMM term: rho * sum_k T_(k)
     y_out = rho * 4 * x;  % Simplified: each element appears 4 times in unfoldings
     
-    % Measurement term: lambda * sum_i (<A_i, T> / sqrt(m)) * A_i / sqrt(m)
+    % Measurement term: rho * sum_i (<A_i, T> / sqrt(m)) * A_i / sqrt(m)
     % This accounts for the scaling: y_i = <A_i, T> / sqrt(m)
     for i = 1:length(A_cells)
         Ai_tensor = compute_Ai_tensor(A_cells{i});
         inner_prod = tensor_inner_product(Ai_tensor, T);
-        y_out = y_out + (lambda / m) * inner_prod * Ai_tensor(:);
+        y_out = y_out + (rho / m) * inner_prod * Ai_tensor(:);
     end
 end
 
-function b = compute_rhs(Z, U, A_cells, y, rho, lambda, tensor_dims, m)
+function b = compute_rhs(Z, U, A_cells, y, rho, tensor_dims, m)
     % Compute right-hand side for T update
     b = zeros(prod(tensor_dims), 1);
     
