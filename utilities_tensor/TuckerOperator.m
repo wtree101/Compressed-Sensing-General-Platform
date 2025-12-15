@@ -49,8 +49,8 @@ classdef TuckerOperator
             %
             % Inputs:
             %   A_cells - Cell array of measurement matrices {A₁, A₂, ..., A_m}
-            %             For 4th-order: each A_i is (d×d) matrix
-            %   A_mat - Measurement matrix of size (m × d^2), each row is vec(A_i)
+            %             For 4th-order: each A_i is (d1×d2) matrix
+            %   A_mat - Measurement matrix of size (m × d1*d2), each row is vec(A_i)
             % Optional Name-Value Pairs:
             %   'order'      - Tensor order (default: 4)
             %   'symmetric'  - Kronecker structure A_i ⊗ A_i (default: true)
@@ -72,9 +72,10 @@ classdef TuckerOperator
             % Auto-detect dimensions from first measurement matrix
             if isempty(p.Results.dims)
                 if obj.order == 4
-                    % A_i is d×d, full tensor is d×d×d×d
-                    d = size(A_cells{1}, 1);
-                    obj.dims = [d, d, d, d];
+                    % A_i is d1×d2, full tensor is d1×d2×d1×d2
+                    d1 = size(A_cells{1}, 1);
+                    d2 = size(A_cells{1}, 2);
+                    obj.dims = [d1, d2, d1, d2];
                 % else
                 %     error('Must provide dims for non-standard operator');
                 end
@@ -136,7 +137,11 @@ classdef TuckerOperator
             U2 = T_tucker.U{2};
             U3 = T_tucker.U{3};
             U4 = T_tucker.U{4};
-            [d, r] = size(U1);
+            
+            % Get dimensions (support non-square matrices)
+            d1 = size(U1, 1);  % Row dimension
+            d2 = size(U2, 1);  % Column dimension
+            r = size(U1, 2);   % Tucker rank
             
             % Unfold core tensor: G_mat is (r² × r²)
             G = T_tucker.G;
@@ -151,7 +156,7 @@ classdef TuckerOperator
             B2_mat = zeros(r*r, obj.m);  % Each column is vec(U₃' * A_i * U₄)
             
             for i = 1:obj.m
-            Ai = reshape(obj.A_cells{i}, [d, d]);
+            Ai = reshape(obj.A_cells{i}, [d1, d2]);
             B1 = U1' * Ai * U2;
             B2 = U3' * Ai * U4;
             B1_mat(:, i) = B1(:);
@@ -196,7 +201,11 @@ classdef TuckerOperator
             U2 = T_tucker.U{2};
             U3 = T_tucker.U{3};
             U4 = T_tucker.U{4};
-            [d, r] = size(U1);
+            
+            % Get dimensions (support non-square matrices)
+            d1 = size(U1, 1);  % Row dimension
+            d2 = size(U2, 1);  % Column dimension
+            r = size(U1, 2);   % Tucker rank
             
             % Initialize gradient as Tucker tensor
             Grad_F = TuckerTensor(T_tucker.dims, T_tucker.tucker_ranks, ...
@@ -261,8 +270,8 @@ classdef TuckerOperator
             
             %% Mode 1: dUp₁
             % Gradient term: Σ_i residual_i * A_i ×₂ U₂^T ×₃ U₃^T ×₄ U₄^T
-            % Result is d × r³ matrix after mode-1 unfolding
-            grad_term_1 = zeros(d, r^3);
+            % Result is d1 × r³ matrix after mode-1 unfolding
+            grad_term_1 = zeros(d1, r^3);
             for i = 1:obj.m
                 Ai = obj.A_cells{i};
                 % For A_i ⊗ A_i, mode-1 unfolding gives contribution:
@@ -270,15 +279,15 @@ classdef TuckerOperator
                 % Efficiently compute for each component
                 
                 % Build (A_i ⊗ A_i) ×₂ U₂^T ×₃ U₃^T ×₄ U₄^T in mode-1 unfolding
-                B1 =  Ai * U2;  % d × r
+                B1 =  Ai * U2;  % d1 × r
                 B2 = U3' * Ai * U4;  % r × r
-                grad_term_1 = grad_term_1 + residual(i)  * reshape( (reshape(B1, [d*r,1]) * reshape(B2, [1, r*r])), [d , r^3]);
+                grad_term_1 = grad_term_1 + residual(i)  * reshape( (reshape(B1, [d1*r,1]) * reshape(B2, [1, r*r])), [d1 , r^3]);
                 % now the vec order is 4 3 2, correct
             end
             % Project to tangent space: (I - U₁*U₁') * grad_term_1 * G_pinv{1}
             P_perp_1 = grad_term_1  - U1 * (U1'*grad_term_1);
             Grad_F.Up{1} = P_perp_1  * G_pinv{1}; % careful match dimensions, I think we don't need transpose
-            % size of Grad_F.U{1}: d × r
+            % size of Grad_F.U{1}: d1 × r
             % For symmetric case, use symmetry
             if T_tucker.is_symmetric
                 % All modes have same contribution (with symmetry)
@@ -288,52 +297,52 @@ classdef TuckerOperator
             else
                 %% Mode 2: dUp₂
                 % Gradient term: Σ_i residual_i * A_i^T ×₁ U₁^T ×₃ U₃^T ×₄ U₄^T
-                grad_term_2 = zeros(d, r^3);
+                grad_term_2 = zeros(d2, r^3);
                 for i = 1:obj.m
                     Ai = obj.A_cells{i};
                     % Build (A_i ⊗ A_i) ×₁ U₁^T ×₃ U₃^T ×₄ U₄^T in mode-2 unfolding
-                    B1 = Ai' * U1;  % d × r
+                    B1 = Ai' * U1;  % d2 × r
                     B2 = U3' * Ai * U4;  % r × r
-                    grad_term_2 = grad_term_2 + residual(i) * reshape((reshape(B1, [d*r, 1]) * reshape(B2, [1, r*r])), [d, r^3]);
+                    grad_term_2 = grad_term_2 + residual(i) * reshape((reshape(B1, [d2*r, 1]) * reshape(B2, [1, r*r])), [d2, r^3]);
                 end
                 % now the vec order is 4 3 1, correct
                 % Project to tangent space: (I - U₂*U₂') * grad_term_2 * G_pinv{2}
                 P_perp_2 = grad_term_2 - U2 * (U2' * grad_term_2);
-                Grad_F.Up{2} = P_perp_2 * G_pinv{2};  % No transpose: (d×r³) × (r³×r) = d×r
+                Grad_F.Up{2} = P_perp_2 * G_pinv{2};  % No transpose: (d2×r³) × (r³×r) = d2×r
                 
                 %% Mode 3: dUp₃
                 % Gradient term: Σ_i residual_i * A_i ×₁ U₁^T ×₂ U₂^T ×₄ U₄^T
-                grad_term_3 = zeros(d, r, r, r);
+                grad_term_3 = zeros(d1, r, r, r);
                 for i = 1:obj.m
                     Ai = obj.A_cells{i};
                     % Build (A_i ⊗ A_i) ×₁ U₁^T ×₂ U₂^T ×₄ U₄^T in mode-3 unfolding
-                    B1 = Ai * U4;  % d × r
+                    B1 = Ai * U4;  % d1 × r
                     B2 = U1' * Ai * U2;  % r × r
-                    grad_term_3 = grad_term_3 + residual(i) * reshape((reshape(B1, [d*r, 1]) * reshape(B2, [1, r*r])), [d, r, r, r]);
+                    grad_term_3 = grad_term_3 + residual(i) * reshape((reshape(B1, [d1*r, 1]) * reshape(B2, [1, r*r])), [d1, r, r, r]);
                     % now the vec order is 3 4 1 2, it shoud be permuted to 3 1 2 4
                 end
                 grad_term_3 = permute(grad_term_3, [1, 3, 4, 2]);
-                grad_term_3 = reshape(grad_term_3, [d, r^3]);
+                grad_term_3 = reshape(grad_term_3, [d1, r^3]);
                 % Project to tangent space: (I - U₃*U₃') * grad_term_3 * G_pinv{3}
                 P_perp_3 = grad_term_3 - U3 * (U3' * grad_term_3);
-                Grad_F.Up{3} = P_perp_3 * G_pinv{3};  % No transpose: (d×r³) × (r³×r) = d×r
+                Grad_F.Up{3} = P_perp_3 * G_pinv{3};  % No transpose: (d1×r³) × (r³×r) = d1×r
                 
                 %% Mode 4: dUp₄
                 % Gradient term: Σ_i residual_i * A_i^T ×₁ U₁^T ×₂ U₂^T ×₃ U₃^T
-                grad_term_4 = zeros(d, r ,r,r);
+                grad_term_4 = zeros(d2, r ,r,r);
                 for i = 1:obj.m
                     Ai = obj.A_cells{i};
                     % Build (A_i ⊗ A_i) ×₁ U₁^T ×₂ U₂^T ×₃ U₃^T in mode-4 unfolding
-                    B1 = Ai' * U3;  % d × r
+                    B1 = Ai' * U3;  % d2 × r
                     B2 = U1' * Ai * U2;  % r × r
-                    grad_term_4 = grad_term_4 + residual(i) * reshape((reshape(B1, [d*r, 1]) * reshape(B2, [1, r*r])), [d, r , r, r]);
+                    grad_term_4 = grad_term_4 + residual(i) * reshape((reshape(B1, [d2*r, 1]) * reshape(B2, [1, r*r])), [d2, r , r, r]);
                     % now the vec order is 4 3 1 2, it shoud be permuted to 4 1 2 3
                 end
                 grad_term_4 = permute(grad_term_4, [1 , 3,4,2]);
-                grad_term_4 = reshape(grad_term_4, [d, r^3]);
+                grad_term_4 = reshape(grad_term_4, [d2, r^3]);
                 % Project to tangent space: (I - U₄*U₄') * grad_term_4 * G_pinv{4}
                 P_perp_4 = grad_term_4 - U4 * (U4' * grad_term_4);
-                Grad_F.Up{4} = P_perp_4 * G_pinv{4};  % No transpose: (d×r³) × (r³×r) = d×r
+                Grad_F.Up{4} = P_perp_4 * G_pinv{4};  % No transpose: (d2×r³) × (r³×r) = d2×r
             end
             
         end
@@ -358,19 +367,21 @@ classdef TuckerOperator
                 % For 4th-order: y_i = <A_i ⊗ A_i, T>
                 % Vectorize: y_i = vec(A_i)' * (A_i ⊗ I ⊗ I ⊗ I + ...) * vec(T)
                 % More efficiently: reshape and use tensor contractions
-                d = obj.dims(1);
+                d1 = obj.dims(1);
+                d2 = obj.dims(2);
+                n = d1 * d2;  % Total elements in matrix
                 
                 % Reshape T_full to matrix form for vectorized operations
-                % T_full is d×d×d×d, reshape to (d²×d²)
+                % T_full is d1×d2×d1×d2, reshape to (n×n)
                
-                A_tensor = zeros(obj.m, d*d*d*d);
+                A_tensor = zeros(obj.m, n*n);
                 for i = 1:obj.m
-                    Ai = reshape(obj.A_cells{i}, [d, d]);
+                    Ai = reshape(obj.A_cells{i}, [d1, d2]);
                     % Fourth-order tensor A_i ⊗ A_i
-                    AiAi = reshape(Ai, d^2, 1) * reshape(Ai, 1, d^2);  % d^2 x d^2
+                    AiAi = reshape(Ai, n, 1) * reshape(Ai, 1, n);  % n × n
                     A_tensor(i, :) = AiAi(:)';  % Flatten and store
                 end
-                y = A_tensor * reshape(T_full, [d*d*d*d, 1]);
+                y = A_tensor * reshape(T_full, [n*n, 1]);
             else
                 error('General forward only supports 4th-order tensors');
             end
@@ -394,9 +405,9 @@ classdef TuckerOperator
             %   y - Measurement vector (m × 1)
             %
             % Output:
-            %   T - 4th-order tensor (d×d×d×d) formed as sum of weighted Kronecker products
+            %   T - 4th-order tensor (d1×d2×d1×d2) formed as sum of weighted Kronecker products
             %
-            % Complexity: O(m * d⁴) time, O(d⁴) memory
+            % Complexity: O(m * (d1*d2)²) time, O((d1*d2)²) memory
             % (Avoids forming m * d⁴ explicit Kronecker products)
             %
             % Example:
@@ -407,8 +418,10 @@ classdef TuckerOperator
                 error('kronecker_adjoint is currently only implemented for 4th-order tensors');
             end
             
-            d = obj.dims(1);
-            T = zeros(d, d, d, d);
+            % Support non-square matrices: d1×d2×d1×d2 tensor
+            d1 = obj.dims(1);
+            d2 = obj.dims(2);
+            T = zeros(d1, d2, d1, d2);
             
             % Accumulate: T = Σ_i y_i * (A_i ⊗ A_i)
             for i = 1:obj.m
@@ -416,13 +429,13 @@ classdef TuckerOperator
                     continue;  % Skip zero measurements for efficiency
                 end
                 
-                Ai = obj.A_cells{i};  % d×d matrix
+                Ai = obj.A_cells{i};  % d1×d2 matrix
                 
                 % Compute A_i ⊗ A_i as 4th-order tensor efficiently
                 % Using outer product: vec(A_i) * vec(A_i)'
-                Ai_vec = Ai(:);                      % vec(A_i) as column (d² × 1)
-                AiAi_flat = Ai_vec * Ai_vec';        % Outer product (d² × d²)
-                AiAi = reshape(AiAi_flat, [d, d, d, d]);  % 4th-order tensor
+                Ai_vec = Ai(:);                      % vec(A_i) as column (d1*d2 × 1)
+                AiAi_flat = Ai_vec * Ai_vec';        % Outer product (d1*d2 × d1*d2)
+                AiAi = reshape(AiAi_flat, [d1, d2, d1, d2]);  % 4th-order tensor
                 
                 % Accumulate: T += y_i * (A_i ⊗ A_i)
                 T = T + y(i) * AiAi;

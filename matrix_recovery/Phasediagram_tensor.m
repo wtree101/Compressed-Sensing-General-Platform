@@ -27,21 +27,22 @@ pre_func = [];
 
 % Options: @Initialization, @Initialization_random, @initialize_power_method
  %pre_func = @(y) set_zero_outside_range_tensor(y);
- init_method = @initialize_power_method;
+ %init_method = @initialize_power_method;
 %T_power = 20;
 % T_power = 5;
-% init_method = @initialize_tensor_lift;
+% init_method = @initialize_tensor_lift;  @initialize_tensor_lift_tucker_spectral
 init_method = @initialize_tensor_lift_tucker_spectral;
-T_power = 20; % No RGD operations
+T_power = 0; % No RGD operations
 
 
-alg_name = 'MatsubGD_TNNinit';  % TNN = Tensor Nuclear Norm
-nonlinear_func = [];  % Phase retrieval model
+alg_name = 'MatsubGD_spectralinit';  % TNN = Tensor Nuclear Norm
+%nonlinear_func = [];  % Phase retrieval model
+nonlinear_func = @(y) abs(y);
 % Set initialization to use tensor nuclear norm
-init_method = @initialize_tensor_nuclear_norm;
+%init_method = @initialize_tensor_nuclear_norm;
 
 % Matrix dimensions and problem setup
-d1 = 20;             % Matrix row dimension
+d1 = 15;             % Matrix row dimension
 d2 = d1;             % Matrix column dimension (d1 x d2)
 kappa = 2;           % Condition number
          % Target rank for ground truth

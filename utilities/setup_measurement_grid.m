@@ -30,7 +30,11 @@ function [m_all, data_dir] = setup_measurement_grid(params)
         %approx = floor((d1 + d2)*10);
         % record: selection for scale
         %approx = floor((d1 + d2)*10); for r_star = 01
-    approx = floor(d1^2);
+    if d1==d2
+        approx = floor(d1*d2);
+    else
+        approx = floor(d1*d2)*2;
+    end
     Max_scale = round(log2(approx));
     m_max = 2^Max_scale;
     

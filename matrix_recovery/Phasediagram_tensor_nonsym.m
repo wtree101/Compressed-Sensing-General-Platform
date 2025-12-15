@@ -1,32 +1,19 @@
-%%%%%%%%%% Phase Diagram for Tensor-Lifted Matrix Recovery
-% This script generates phase diagrams for low-rank symmetric matrix recovery
-% using various initialization methods followed by local refinement.
+%%%%%%%%%% Phase Diagram for Tensor-Lifted Matrix Recovery (Non-Symmetric)
+% This script generates phase diagrams for low-rank matrix recovery
+% supporting BOTH symmetric and non-symmetric matrices
+% using fourth-order tensor formulation: X = USV^T, T = X ⊗ X
+% Linear model: y_i = ⟨A_i ⊗ A_i, T⟩
 %
-% Available Initialization Methods:
-%   1. Tucker Spectral:        @initialize_tensor_lift_tucker_spectral (default)
-%   2. Tensor Nuclear Norm:    @initialize_tensor_nuclear_norm
-%   3. Power Method:           @initialize_power_method
-%   4. Basic Tensor Lift:      @initialize_tensor_lift
-%   5. Random:                 @Initialization_random
+% For square matrices (d1 = d2): can use symmetric (X = USU^T) or non-symmetric
+% For non-square matrices (d1 ≠ d2): automatically uses non-symmetric (X = USV^T)
 %
-% Key Parameters:
-%   - T_power: Number of initialization steps/iterations (general parameter)
-%              Works for all initialization methods
-%   - T: Number of local refinement iterations
-%   - mu: Step size for gradient descent
-%
-% Workflow:
-%   1. Initialize with T_power iterations (specified initialization method)
-%   2. Refine with T iterations (gradient descent on matrix manifold)
-%
-% The script uses a modular design that accepts different initialization
-% function handles. Simply uncomment your preferred initialization method
-% in the configuration section below.
+% The script uses a modular design with run_rank_experiment() function
+% that accepts different solver function handles (e.g., @onetrial_tensor)
 
 clear; clc;
 
 %% Experiment Configuration
-fprintf('=== Low rank phase retrieval; Support Tensor-Lifted method; Phase Diagram Setup ===\n');
+fprintf('=== Low-Rank Matrix Recovery (Symmetric & Non-Symmetric): Phase Diagram Setup ===\n');
 
 % trial_func = @onetrial_MatTensor;
 % alg_func = @solve_PGD;
@@ -34,69 +21,56 @@ fprintf('=== Low rank phase retrieval; Support Tensor-Lifted method; Phase Diagr
 % init_method = [];
 % nonlinear_func = [];
 
-%% Select Trial and Algorithm Functions
+% Algorithm and trial configuration
 trial_func = @onetrial_Mat;
 alg_func = @solve_PGD_amplitude;
-nonlinear_func = @(y) abs(y);  % Phase retrieval model (amplitude measurements)
-pre_func = [];  % Preprocessing function (optional, e.g., @set_zero_outside_range_tensor)
+alg_name = 'PPM';  % TNN = Tensor Nuclear Norm
+% tensorSpectralinit
+% MatsubGD_TNNinit
+%PPM
 
-%% Select Initialization Method
-% Available initialization methods:
-% 1. Power method:               @initialize_power_method
-% 2. Tensor lift (basic):        @initialize_tensor_lift
-% 3. Tucker spectral:            @initialize_tensor_lift_tucker_spectral
-% 4. Tensor nuclear norm (TNN):  @initialize_tensor_nuclear_norm
-% 5. Random:                     @Initialization_random
+% Nonlinear function for measurements
+nonlinear_func = @(y) abs(y);  % Phase retrieval model (set to [] or @(y) abs(y) for amplitude)
 
-% Choose one initialization method:
-% init_method = @initialize_tensor_lift_tucker_spectral;
-% alg_name = 'MatsubGD_tensorSpectralinit';
-% T_power = 20;  % Number of initialization steps/iterations
+% Preprocessing function
+pre_func = [];  % Optional: @(y) set_zero_outside_range_tensor(y)
 
-% % Alternative: Tensor Nuclear Norm initialization
-% init_method = @initialize_tensor_nuclear_norm;
-% alg_name = 'MatsubGD_TNNinit';
-% T_power = 20;  % Number of TNN initialization iterations
+% Initialization method
+init_method = @initialize_tensor_lift_tucker_spectral;  % Options: @initialize_tensor_lift, @initialize_tensor_lift_tucker_spectral, @initialize_power_method, @Initialization, @Initialization_random
+T_power = 0;  % Number of power iterations (if using power method initialization)
 
-%Alternative: Power method initialization
-% init_method = @initialize_power_method;
-% alg_name = 'MatsubGD_powerinit';
-% T_power = 20;  % Number of power method iterations
 
-% Matrix dimensions and problem setup
-d1 = 40;             % Matrix row dimension
-d2 = d1;             % Matrix column dimension (d1 x d2)
+%% Matrix dimensions and problem setup
+d1 = 10;             % Matrix row dimension
+d2 = 20;             % Matrix column dimension (d1 x d2)
 kappa = 2;           % Condition number
          % Target rank for ground truth
-r_max = 5;          % Maximum rank to test
-r_grid = 1:1:5;     % Rank values to test
+r_max = 3;          % Maximum rank to test
+r_grid = 1:1:r_max;     % Rank values to test
 
 % Experiment parameters
-trial_num = 20;       % Number of trials per (r, m) pair
+trial_num = 5;      % Number of trials per (r, m) pair
 verbose = 0;         % 0: minimal output, 1: detailed output
 add_flag = 0;        % 0: overwrite existing data, 1: add to existing data
-T = 200;             % Number of local refinement iterations
-problem_flag = 2;    % 2: phase retrieval, 0: sensing
+T = 200;             % Number of iterations per trial
+problem_flag = 2;
 use_parallel = false; % true: use parpool/parfor, false: sequential computation
 
-%% Initialization-Specific Parameters
-% T_power: General parameter for number of initialization steps/iterations
-%   - For Tucker spectral: number of RGD iterations on Tucker manifold
-%   - For Tensor nuclear norm: number of ADMM iterations
-%   - For Power method: number of power iterations
-%
-% Note: T_power is set above with the initialization method selection
-
 % Grid generation parameters
-scale_num = 4;       % Number of scale levels for measurement grid
+scale_num = 3;       % Number of scale levels for measurement grid
 
 % Step size parameters to test
 mu_list = [0.1];    % Step sizes for tensor PGD
 % mu_list = [0.1, 0.05, 0.01, 0.005, 0.001];
 
 fprintf('Configuration:\n');
-fprintf('  Matrix size: %dx%d\n', d1, d2);
+if d1 == d2
+    fprintf('  Matrix size: %dx%d (SQUARE - can be symmetric or non-symmetric)\n', d1, d2);
+else
+    fprintf('  Matrix size: %dx%d (NON-SQUARE - must be non-symmetric)\n', d1, d2);
+end
 fprintf('  Rank grid: [%d, %d] with %d values\n', min(r_grid), max(r_grid), length(r_grid));
+fprintf('  Condition number: %.2f\n', kappa);
 fprintf('  Trials per point: %d\n', trial_num);
 fprintf('  Iterations per trial: %d\n', T);
 fprintf('  Step sizes (mu): %d values\n', length(mu_list));
@@ -175,13 +149,24 @@ for mu_idx = 1:length(mu_list)
         end
         
         % Generate ground truth once for all trials at this rank
-        if d1 ~= d2
-            warning('d1 != d2: generating non-square ground truth matrix');
+        % Use groundtruth function: supports both symmetric and non-symmetric
+        if d1 == d2
+            % Square matrix: can be symmetric or non-symmetric
+            symflag = 1;  % Set to 1 for X = USU^T, 0 for X = USV^T
+            fprintf('  Generating ground truth: %dx%d, rank=%d, symmetric=%d\n', ...
+                    d1, d2, r, symflag);
+        else
+            % Non-square matrix: must be non-symmetric
+            symflag = 0;  % Non-symmetric: X = USV^T
+            fprintf('  Generating ground truth: %dx%d, rank=%d, non-symmetric (required)\n', ...
+                    d1, d2, r);
         end
-        U_true = randn(d1, r);
-        %Xstar = U_true * U_true';
-        Xstar = abs(U_true) * abs(U_true)';  % Symmetric rank-r_star matrix
-        Xstar = Xstar / norm(Xstar, 'fro');
+        
+        % Call groundtruth function
+        Xstar = groundtruth(d1, d2, r, kappa, symflag);
+        
+        fprintf('  Ground truth norm: %.6f, actual rank: %d\n', ...
+                norm(Xstar, 'fro'), rank(Xstar, 1e-10));
         
         % Loop over measurement counts
         for m_idx = 1:length(m_all)
@@ -203,26 +188,18 @@ for mu_idx = 1:length(mu_list)
             trial_params.m = m;
             trial_params.r = r;
             trial_params.kappa = kappa;
-            trial_params.T = T;  % Local refinement iterations
-            trial_params.T_power = T_power;  % Initialization iterations (general parameter)
-            trial_params.mu = mu;  % Step size for local refinement
+            trial_params.T = T;
+            trial_params.T_power = T_power;
+            % trial_params.mu = mu;
             trial_params.Xstar = Xstar;
             trial_params.verbose = verbose;
-            trial_params.init = init_method;  % Initialization function handle
+            trial_params.init = init_method;  % Direct function handle
             trial_params.trial_num = trial_num;
             trial_params.use_parallel = use_parallel;
             trial_params.onetrial = trial_func;
             trial_params.alg_func = alg_func;
             trial_params.nonlinear_func = nonlinear_func;
             trial_params.pre_func = pre_func;
-            trial_params.projection = @(X) project_rank_r(X, r);  % Rank-r projection
-            
-            % Additional parameters for specific initialization methods
-            % These are passed to the initialization function via params struct
-            trial_params.max_iter = T_power;  % For tensor nuclear norm: ADMM iterations
-            trial_params.lambda = 1.0;        % For tensor nuclear norm: regularization
-            trial_params.rho = 0.1;           % For tensor nuclear norm: ADMM penalty
-            trial_params.normalize = true;    % Normalize initialization output
             % Run multiple trials using existing multipletrial function
             [output, success_rate] = multipletrial(trial_params);
             
@@ -277,5 +254,3 @@ if use_parallel
 end
 
 fprintf('Tensor phase diagram generation completed successfully!\n');
-
-

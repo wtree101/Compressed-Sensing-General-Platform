@@ -7,10 +7,11 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
 %
 % Key advantages:
 %   - Spectral initialization: T = sum_i y_i * (Ai ⊗ Ai)
-%   - Never forms full d×d×d×d tensor (memory efficient)
+%   - Never forms full d1×d2×d1×d2 tensor (memory efficient)
 %   - Works in Tucker format: T = G ×₁ U₁ ×₂ U₂ ×₃ U₃ ×₄ U₄
 %   - Uses Riemannian optimization on Tucker manifold
 %   - Efficient operators via TuckerOperator class
+%   - Supports both square (d1=d2) and non-square (d1≠d2) matrices
 %
 % Inputs:
 %   y        - Measurement vector (m x 1)
@@ -22,7 +23,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
 %   params   - Struct with optional fields:
 %              .T_power: Number of RGD iterations (default: 10)
 %              .mu: Step size for RGD (default: 0.01)
-%              .r: Tucker rank for tensor (default: min(5, d/4))
+%              .r: Tucker rank for tensor (default: min(5, min(d1,d2)/4))
 %              .Xstar: Ground truth for error tracking
 %              .verbose: Print progress (default: false)
 %                        Note: verbose=true automatically enables debug mode
@@ -39,12 +40,9 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
 %   U0       - Factor matrix (empty, for compatibility)
 %   history  - Struct with convergence information
 
-    %% Validate symmetric case
-    if d1 ~= d2
-        error('Tensor lift initialization requires symmetric matrices: d1 must equal d2');
-    end
-    d = d1;
+    %% Setup dimensions
     m = length(y);
+    is_square = (d1 == d2);
     
     %% Extract parameters
     T_power = get_param(params, 'T_power', 10);
@@ -54,7 +52,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
     if isfield(params, 'r')
         tucker_rank = params.r;
     else
-        tucker_rank = min(5, max(1, floor(d/4)));
+        tucker_rank = min(5, max(1, floor(min(d1, d2)/4)));
     end
     
     use_symmetric = get_param(params, 'symmetric', false);
@@ -78,9 +76,10 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
     
     if verbose
         fprintf('=== Tucker-based Tensor Lift Initialization (Spectral) ===\n');
-        fprintf('Matrix: %dx%d, Tucker rank: %d, Measurements: %d\n', d, d, tucker_rank, m);
+        fprintf('Matrix: %dx%d, Tucker rank: %d, Measurements: %d\n', d1, d2, tucker_rank, m);
         fprintf('RGD iterations: %d, Step size: %.4f\n', T_power, mu);
         fprintf('Symmetric Tucker: %s\n', mat2str(use_symmetric));
+        fprintf('Square matrix: %s\n', mat2str(is_square));
         fprintf('Debug mode: ON (auto-enabled by verbose mode)\n');
         if use_rgd_refinement
             fprintf('RGD refinement: ON (threshold=%.2e, max_iter=%d)\n', precision_threshold, rgd_max_iter);
@@ -105,12 +104,12 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         end
         
         % Form ground truth tensor: Tstar = Xstar ⊗ Xstar
-        % This is a d×d×d×d tensor
-        Tstar_full = zeros(d, d, d, d);
-        for i = 1:d
-            for j = 1:d
-                for k = 1:d
-                    for l = 1:d
+        % For non-symmetric: d1×d2×d1×d2 tensor
+        Tstar_full = zeros(d1, d2, d1, d2);
+        for i = 1:d1
+            for j = 1:d2
+                for k = 1:d1
+                    for l = 1:d2
                         Tstar_full(i,j,k,l) = Xstar(i,j) * Xstar(k,l);
                     end
                 end
@@ -137,32 +136,36 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         fprintf('Extracting measurement matrices...\n');
     end
     
-    n = d * d;
+    n = d1 * d2;
     A_matrix = zeros(m, n);
     for j = 1:n
         e_j = zeros(n, 1);
         e_j(j) = 1;
-        E_j = reshape(e_j, [d, d]);
+        E_j = reshape(e_j, [d1, d2]);
         A_matrix(:, j) = operator.A(E_j);
     end
     
     % Create cell array of measurement matrices
     A_cells = cell(m, 1);
     for i = 1:m
-        Ai = reshape(A_matrix(i, :), [d, d]);
-        A_cells{i} = (Ai + Ai') / 2;  % Symmetrize
+        Ai = reshape(A_matrix(i, :), [d1, d2]);
+        % Only symmetrize for square matrices
+        
+        A_cells{i} = Ai;
+        
     end
     
     %% Create Tucker operator (never forms A_i ⊗ A_i explicitly)
     tucker_op = TuckerOperator(A_cells, 'order', 4, 'symmetric', false);
-    tucker_op.A_mat = A_matrix';  % Store for efficient computation (d² × m)
+    tucker_op.A_mat = A_matrix';  % Store for efficient computation (n × m)
     
     if verbose
         fprintf('Tucker operator created (Kronecker structure)\n');
     end
     
     %% Initialize Tucker tensor using spectral method
-    dims = [d, d, d, d];
+    % For non-symmetric matrices: d1×d2×d1×d2 tensor
+    dims = [d1, d2, d1, d2];
     
     % Spectral initialization: directly form T = sum_i y_i * (Ai ⊗ Ai)
     if verbose
@@ -354,7 +357,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         % Extract matrix and compute error if ground truth available
         if has_ground_truth
             X_current = extract_matrix_from_tucker(T_tucker);
-            X_current = (X_current + X_current') / 2;  % Symmetrize
+            % X_current = (X_current + X_current') / 2;  % Symmetrize
             [history.matrix_errors(t), ~] = rectify_sign_ambiguity(X_current, Xstar);
             
             
@@ -394,7 +397,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
                 
                 % Extract final matrix after RGD
                 X0 = extract_matrix_from_tucker(T_tucker);
-                X0 = (X0 + X0') / 2;
+                %X0 = (X0 + X0') / 2;
                 
                 if verbose
                     fprintf('RGD refinement complete: Final loss = %.6e\n', rgd_output.Error_function(end));
@@ -418,7 +421,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
     % Only extract if RGD wasn't used (already extracted above)
     if ~isfield(history, 'rgd_used') || ~history.rgd_used
         X0 = extract_matrix_from_tucker(T_tucker);
-        X0 = (X0 + X0') / 2;  % Symmetrize
+        %X0 = (X0 + X0') / 2;  % Symmetrize
     end
     
     %% Final error and output
@@ -461,55 +464,146 @@ function X = extract_matrix_from_tucker(T_tucker)
     % EXTRACT_MATRIX_FROM_TUCKER Extract matrix from Tucker tensor
     % For 4th-order tensor T = X ⊗ X, extract X via matricization
     %
-    % Method: Matricize T to (d² × d²) and extract leading eigenvector
+    % Method: Matricize T to (d1*d2 × d1*d2) and extract leading eigenvector
+    % For non-square matrices: d1×d2×d1×d2 tensor
+    % Check whether T_tucker (first form [d1,d2,d1,d2], next form as [d1*d2, d1*d2]) is symmetric 
+
     
-    d = T_tucker.dims(1);
+    d1 = T_tucker.dims(1);
+    d2 = T_tucker.dims(2);
     r = T_tucker.tucker_ranks(1);
+
+    % % 1. Check symmetry in tensor form [d1,d2,d1,d2]
+     T_full = T_tucker.full();
+     T_mat = reshape(T_full, d1*d2, d1*d2);
+    % is_tensor_symmetric = norm(T_full - permute(T_full, [3 4 1 2]), 'fro') < 1e-10;
+    % if is_tensor_symmetric
+    %     disp('T_tucker.full() is symmetric under (1,2) <-> (3,4) permutation.');
+    % else
+    %     disp('T_tucker.full() is NOT symmetric under (1,2) <-> (3,4) permutation.');
+    % end
+
+    % 2. Check symmetry in matricized form [d1*d2, d1*d2]
+    % T_mat_check = reshape(T_full, d1*d2, d1*d2);
+    % if norm(T_mat_check - T_mat_check', 'fro') < 1e-10
+    %     disp('Matricized T_tucker.full() is symmetric.');
+    % else
+    %     disp('Matricized T_tucker.full() is NOT symmetric.');
+    % end
+
+    % % 3. Check symmetry after HOSVD to [r,r,r,r]
+    % T_hosvd = HOSVD(T_full, [r, r, r, r]);
+    % is_hosvd_tensor_symmetric = norm(T_hosvd - permute(T_hosvd, [3 4 1 2]), 'fro') < 1e-10;
+    % if is_hosvd_tensor_symmetric
+    %     disp('HOSVD(T_tucker.full(),[r,r,r,r]) is symmetric under (1,2)<->(3,4) permutation.');
+    % else
+    %     disp('HOSVD(T_tucker.full(),[r,r,r,r]) is NOT symmetric under (1,2)<->(3,4) permutation.');
+    % end
+
+    % T_hosvd_mat = reshape(T_hosvd, d1*d2, d1*d2);
+    % if norm(T_hosvd_mat - T_hosvd_mat', 'fro') < 1e-10
+    %     disp('Matricized HOSVD(T_tucker.full(),[r,r,r,r]) is symmetric.');
+    % else
+    %     disp('Matricized HOSVD(T_tucker.full(),[r,r,r,r]) is NOT symmetric.');
+    % end
     
-    % Compute T in matricized form (d² × d²) without forming full tensor
+    % Compute T in matricized form (d1*d2 × d1*d2) without forming full tensor
     % T_mat = (U₁ ⊗ U₂) * G_mat * (U₃ ⊗ U₄)'
     % where G_mat is r² × r² matricization of core
     
-    U1 = T_tucker.U{1};
-    U2 = T_tucker.U{2};
-    U3 = T_tucker.U{3};
-    U4 = T_tucker.U{4};
-    G = T_tucker.G;
+    % U1 = T_tucker.U{1};
+    % U2 = T_tucker.U{2};
+    % U3 = T_tucker.U{3};
+    % U4 = T_tucker.U{4};
+    % G = T_tucker.G;
     
     % Handle rank-1 case (scalar core)
-    if isscalar(G)
-        % For scalar core, form Kronecker products directly
-        U_left = kron(U1, U2);   % d² × r
-        U_right = kron(U3, U4);  % d² × r
-        T_mat = G * (U_left * U_right');
-    else
-        % General case: form matricized core and compute
-        G_mat = reshape(permute(G, [1,2,3,4]), [r*r, r*r]);
+    % if isscalar(G)
+    %     % For scalar core, form Kronecker products directly
+    %     U_left = kron(U1, U2);   % (d1*d2) × r
+    %     U_right = kron(U3, U4);  % (d1*d2) × r
+    %     T_mat = G * (U_left * U_right');
+    % else
         
-        % Form Kronecker products of factors
-        U_left = kron(U1, U2);   % d² × r²
-        U_right = kron(U3, U4);  % d² × r²
+    %     % General case: form matricized core and compute
+    %     G_mat = reshape(permute(G, [1,2,3,4]), [r*r, r*r]);
+
+    %     %% Equivalent kron formulation
+    %     % careful kron(U1,U2) is wrong. Kron would run index from U1 to U2 in kron(U2, U1), which is consisent with U1 U2'(:) (vector case as example, our order rule for tucker tensor and vector reshape)
+    %     % Form Kronecker products of factors
+    % %     U_left = kron(U2, U1);   % (d1*d2) × r²
+    % %     U_right = kron(U4, U3);  % (d1*d2) × r²
+    % %  % Matricized tensor: T_mat = U_left * G_mat * U_right'
+    % %     T_mat = U_left * G_mat * U_right';
+
+    %     % % Compare with explicit for-loop computation (slow, for debug)
+    %     % T_mat_for = zeros(d1*d2, d1*d2);
+    %     % for i1 = 1:d1
+    %     %     for i2 = 1:d2
+    %     %     for j1 = 1:d1
+    %     %         for j2 = 1:d2
+    %     %         val = 0;
+    %     %         for a = 1:r
+    %     %             for b = 1:r
+    %     %             for c = 1:r
+    %     %                 for d = 1:r
+    %     %                 val = val + ...
+    %     %                     U1(i1,a) * U2(i2,b) * G(a,b,c,d) * U3(j1,c) * U4(j2,d);
+    %     %                 end
+    %     %             end
+    %     %             end
+    %     %         end
+    %     %         row = (i2-1)*d1 + i1;  i1 1...d1 first!
+    %     %         col = (j2-1)*d1 + j1;
+    %     %         T_mat_for(row, col) = val;
+    %     %         end
+    %     %     end
+    %     %     end
+    %     % end
         
-        % Matricized tensor: T_mat = U_left * G_mat * U_right'
-        T_mat = U_left * G_mat * U_right';
-    end
+    %     % diff_for = norm(T_mat - T_mat_for, 'fro');
+    %     % fprintf('Difference between Kronecker and for-loop T_mat: %.3e\n', diff_for);
+        
+
+    %     % Alternative: form T_full then reshape to matrix, and check consistency
+    %     T_full_alt = T_tucker.full();
+    %     T_mat = reshape(T_full_alt, d1*d2, d1*d2);
+    %     % Check if T_mat_alt is symmetric
+    %     % if norm(T_mat_alt - T_mat_alt', 'fro') < 1e-10
+    %     %     disp('T_mat_alt is symmetric.');
+    %     % else
+    %     %     disp('T_mat_alt is NOT symmetric.');
+    %     % end
+    %     % if norm(T_mat - T_mat_alt, 'fro') > 1e-10
+    %     %     warning('T_mat and T_mat_alt differ: norm = %.3e', norm(T_mat - T_mat_alt, 'fro'));
+    %     % end
+    %     % diff_for = norm(T_mat_alt - T_mat_for, 'fro');
+    %     % fprintf('Difference between full and for-loop T_mat: %.3e\n', diff_for);
+
+    % end
     
-    % Symmetrize
-    T_mat = (T_mat + T_mat') / 2;
+    % Check if T_mat is symmetric
+    % if norm(T_mat - T_mat', 'fro') < 1e-10
+    %     disp('T_mat is symmetric.');
+    % else
+    %     disp('T_mat is NOT symmetric.');
+    % end
+    % % Symmetrize
+    % T_mat = (T_mat + T_mat') / 2;
     
     % Extract leading eigenvector and reshape to matrix
     [V, D] = eig(T_mat);
     [~, idx] = max(abs(diag(D)));
     v_lead = V(:, idx);
     
-    % Reshape to matrix
-    X = reshape(v_lead, [d, d]);
+    % Reshape to matrix (d1 × d2)
+    X = reshape(v_lead, [d1, d2]);
     
     % Normalize
     X = X / norm(X, 'fro');
     
-    % Make symmetric
-    X = (X + X') / 2;
+    % % Make symmetric
+    % X = (X + X') / 2;
 end
 
 

@@ -228,12 +228,12 @@ classdef TuckerTensor
             %
             % Steps:
             %   0. Apply pre_func to y (if provided)
-            %   1. Form T = sum_i y_i * (Ai ⊗ Ai) directly as (d×d×d×d) array
+            %   1. Form T = sum_i y_i * (Ai ⊗ Ai) directly as (d1×d2×d1×d2) array
             %   2. Perform HOSVD on T to get U{1}...U{N}
             %   3. Compute core G = T ×₁ U₁' ×₂ U₂' ×₃ U₃' ×₄ U₄'
             %
-            % Memory usage: d^4 (avoids forming md^4 A_tensor array)
-            % Time complexity: O(m*d^4 + d^5)
+            % Memory usage: (d1*d2)^2 (avoids forming m*(d1*d2)^2 A_tensor array)
+            % Time complexity: O(m*(d1*d2)^2 + (d1*d2)^2.5)
             %
             % Example:
             %   [U_cell, G] = obj.initialize_spectral(op, y, m, 'pre_func', @set_zero_outside_range);
@@ -263,13 +263,14 @@ classdef TuckerTensor
                 warning('Spectral initialization optimized for 4th-order tensors');
             end
             
-            % Get first dimension (assume symmetric case)
-            d = obj.dims(1);
+            % Get dimensions (support non-square matrices)
+            d1 = obj.dims(1);
+            d2 = obj.dims(2);
             tucker_rank = obj.tucker_ranks(1);
             
             % Memory tracking
             if obj.debug
-                fprintf('[Spectral Init] Starting initialization: d=%d, r=%d, m=%d\n', d, tucker_rank, m);
+                fprintf('[Spectral Init] Starting initialization: d1=%d, d2=%d, r=%d, m=%d\n', d1, d2, tucker_rank, m);
             end
             
             % Step 0: Apply preprocessing function to measurements
@@ -304,10 +305,11 @@ classdef TuckerTensor
             y_scaled = y_processed / sqrt(m);
             T = tucker_op.kronecker_adjoint(y_scaled);
             
+        
             mem_T = numel(T) * 8 / 1024;  % KB
             if obj.debug
                 fprintf('[Spectral Init] Memory: T (%dx%dx%dx%d) = %.2f KB\n', ...
-                        d, d, d, d, mem_T);
+                        d1, d2, d1, d2, mem_T);
                 fprintf('[Spectral Init] Tensor T formed: norm=%.6f\n', norm(T(:)));
             end
             
@@ -411,10 +413,11 @@ classdef TuckerTensor
                         mem_total, mem_total / 1024);
                 
                 % Memory comparison with alternative approaches
-                mem_md4 = m * d^4 * 8 / 1024 / 1024;  % MB (if forming full A_tensor)
-                mem_d4 = d^4 * 8 / 1024 / 1024;  % MB (current approach)
-                fprintf('[Spectral Init] Memory saved vs md^4 approach: %.2f MB vs %.2f MB (%.1fx reduction)\n', ...
-                        mem_d4, mem_md4, mem_md4 / max(mem_d4, 1e-6));
+                n = d1 * d2;  % Total matrix elements
+                mem_mn2 = m * n^2 * 8 / 1024 / 1024;  % MB (if forming full A_tensor)
+                mem_n2 = n^2 * 8 / 1024 / 1024;  % MB (current approach)
+                fprintf('[Spectral Init] Memory saved vs m*n^2 approach: %.2f MB vs %.2f MB (%.1fx reduction)\n', ...
+                        mem_n2, mem_mn2, mem_mn2 / max(mem_n2, 1e-6));
                 
                 % Initialization summary
                 if use_symmetric

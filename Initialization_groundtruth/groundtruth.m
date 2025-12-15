@@ -16,9 +16,9 @@ function X = groundtruth(d1,d2,r,kappa,symflag)
 [V,~] = qr(randn(d2,r),0);
  S = diag(diagonal_values);
  if symflag == 0
-    X = U*S*V';
+    X = abs(U)*S*abs(V)';
  else
-    X = U*S*U';
+    X = abs(U)*S*abs(U)';
 end
 
 %X = randn(d1,r)*randn(r,d2);
