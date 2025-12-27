@@ -27,7 +27,6 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
 %              .Xstar: Ground truth for error tracking
 %              .verbose: Print progress (default: false)
 %                        Note: verbose=true automatically enables debug mode
-%              .symmetric: Use symmetric Tucker (U₁=U₂=U₃=U₄) (default: false)
 %              .pre_func: Preprocessing function for measurements (for spectral init)
 %                         Example: @(y) set_zero_outside_range(y)
 %              .precision_threshold: Switch to RGD when error <= threshold (optional)
@@ -55,7 +54,6 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         tucker_rank = min(5, max(1, floor(min(d1, d2)/4)));
     end
     
-    use_symmetric = get_param(params, 'symmetric', false);
     verbose = get_param(params, 'verbose', false);
     debug_mode = get_param(params, 'debug', false);
     
@@ -78,7 +76,6 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         fprintf('=== Tucker-based Tensor Lift Initialization (Spectral) ===\n');
         fprintf('Matrix: %dx%d, Tucker rank: %d, Measurements: %d\n', d1, d2, tucker_rank, m);
         fprintf('RGD iterations: %d, Step size: %.4f\n', T_power, mu);
-        fprintf('Symmetric Tucker: %s\n', mat2str(use_symmetric));
         fprintf('Square matrix: %s\n', mat2str(is_square));
         fprintf('Debug mode: ON (auto-enabled by verbose mode)\n');
         if use_rgd_refinement
@@ -149,10 +146,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
     A_cells = cell(m, 1);
     for i = 1:m
         Ai = reshape(A_matrix(i, :), [d1, d2]);
-        % Only symmetrize for square matrices
-        
-        A_cells{i} = Ai;
-        
+        A_cells{i} = Ai;  % No symmetrization
     end
     
     %% Create Tucker operator (never forms A_i ⊗ A_i explicitly)
@@ -164,7 +158,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
     end
     
     %% Initialize Tucker tensor using spectral method
-    % For non-symmetric matrices: d1×d2×d1×d2 tensor
+    % For matrices: d1×d2×d1×d2 tensor (no symmetry assumption)
     dims = [d1, d2, d1, d2];
     
     % Spectral initialization: directly form T = sum_i y_i * (Ai ⊗ Ai)
@@ -172,9 +166,9 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         fprintf('Using spectral initialization (direct tensor formation)...\n');
     end
     
-    % Create TuckerTensor object
+    % Create TuckerTensor object (no symmetry)
     T_tucker = TuckerTensor(dims, tucker_rank, ...
-                            'symmetric', use_symmetric, ...
+                            'symmetric', false, ...
                             'init_method', 'zeros', ...
                             'debug', debug_mode);
     
@@ -211,206 +205,28 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
                 size(U_cell_init{1}, 1), size(U_cell_init{1}, 2), cond(U_cell_init{1}));
     end
     
-    %% Riemannian Gradient Descent on Tucker manifold
+    %% Riemannian Gradient Descent on Tucker manifold using solver
     if verbose
-        fprintf('\nRunning Riemannian Gradient Descent...\n');
-        if debug_mode
-            fprintf('Iter | Loss      | Tensor Err | Matrix Err | Step\n');
-            fprintf('-----|-----------|------------|------------|-----\n');
-        else
-            fprintf('Iter | Loss      | Matrix Err | Step\n');
-            fprintf('-----|-----------|------------|-----\n');
-        end
+        fprintf('\nRunning Riemannian Gradient Descent (via solve_RGD_tucker_kronecker)...\n');
     end
     
-    for t = 1:T_power
-        % Forward pass: compute measurements
-        y_pred = tucker_op.forward(T_tucker) / sqrt(m);
-        
-        % Compute loss
-        residual = y_pred - y;
-        loss = 0.5 * norm(residual)^2;
-        history.loss_function(t) = loss;
-        
-        % Compute Riemannian gradient
-        Grad_F = tucker_op.get_proj_grad_kronecker(T_tucker, y_pred/ sqrt(m), y/ sqrt(m)) ;
-        
-        % Debug mode: Compare retraction vs HOSVD
-        if debug_mode   % Only for first few iterations (expensive)
-            if verbose && t == 1
-                fprintf('\n[DEBUG] Comparing retraction vs full HOSVD approach...\n\n');
-            end
-            
-            % Save tensors for external testing (first iteration only)
-            if t == 1
-                % Save T_tucker and Grad_F to file
-                debug_data = struct();
-                debug_data.T_tucker = T_tucker;
-                debug_data.Grad_F = Grad_F;
-                debug_data.eta = mu;
-                debug_data.tucker_rank = tucker_rank;
-                debug_data.dims = dims;
-                save('debug_tucker_tensors.mat', 'debug_data');
-                if verbose
-                    fprintf('[DEBUG] Saved T_tucker and Grad_F to debug_tucker_tensors.mat\n');
-                    fprintf('[DEBUG] You can now test with: test_tucker_retraction_from_file.m\n\n');
-                end
-            end
-            
-            % Method 1: Retraction (existing method)
-            T_retract = T_tucker.retraction(Grad_F, mu);
-            
-            % Method 2: Full gradient + HOSVD
-            % Form T_full - mu * Grad_F_full
-            T_current_full = T_tucker.full();
-
-            % Debug
-            % First term: Grad_F.G ×₁ U₁ ×₂ U₂ ×₃ ... ×_N U_N
-            if isscalar(Grad_F.G)
-                % Special case: rank-1 tensor (scalar core)
-                % Form as Kronecker product: U₁ ⊗ U₂ ⊗ ... ⊗ U_N
-                Grad_full = T_tucker.U{1};
-                for i = 2:length(dims)
-                    Grad_full = kron(Grad_full, T_tucker.U{i});
-                end
-                Grad_full = reshape(Grad_full, dims) * Grad_F.G;
-            else
-                % General case: apply mode products
-                Grad_full = Grad_F.G;
-                for i = 1:length(dims)
-                    Grad_full = tensor_mode_product(Grad_full, T_tucker.U{i}, i);
-                end
-            end
-
-            % Add terms for each mode: G ×₁ U₁ ... ×ᵢ Upᵢ ... ×_N U_N
-            for i = 1:length(dims)
-                if isscalar(T_tucker.G)
-                    % Special case: rank-1 tensor (scalar core)
-                    term = T_tucker.U{1};
-                    for j = 2:length(dims)
-                        if j == i
-                            term = kron(term, Grad_F.Up{j});
-                        else
-                            term = kron(term, T_tucker.U{j});
-                        end
-                    end
-                    % Handle first mode
-                    if i == 1
-                        term_temp = Grad_F.Up{1};
-                        for j = 2:length(dims)
-                            term_temp = kron(term_temp, T_tucker.U{j});
-                        end
-                        term = reshape(term_temp, dims) * T_tucker.G;
-                    else
-                        term = reshape(term, dims) * T_tucker.G;
-                    end
-                else
-                    % General case: apply mode products
-                    term = T_tucker.G;
-                    for j = 1:length(dims)
-                        if j == i
-                            term = tensor_mode_product(term, Grad_F.Up{j}, j);
-                        else
-                            term = tensor_mode_product(term, T_tucker.U{j}, j);
-                        end
-                    end
-                end
-                Grad_full = Grad_full + term;
-            end
-            T_updated_full = T_current_full - mu * Grad_full;
-            
-            % HOSVD truncation to Tucker rank
-            T_hosvd = HOSVD(T_updated_full, tucker_rank*[1,1,1,1]);
-            
-            % Compare results
-            T_retract_full = T_retract.full();
-            diff_methods = T_retract_full - T_hosvd;
-            rel_diff = norm(diff_methods(:)) / norm(T_retract_full(:));
-            
-            if verbose
-                fprintf('[DEBUG] Iter %d: Retraction vs HOSVD difference = %.6e\n', t, rel_diff);
-            end
-        else
-            % Normal retraction without comparison
-            T_tucker = T_tucker.retraction(Grad_F, mu);
-        end
-        
-        % Update T_tucker for next iteration
-        if debug_mode 
-            T_tucker = T_retract;  % Use retraction result
-        end
-        
-        % Debug mode: compute tensor error
-        if debug_mode && has_ground_truth
-            % Reconstruct full tensor from Tucker format
-            T_current = T_tucker.full();
-            
-            % Compute tensor errors
-            diff_tensor = T_current - history.Tstar_full;
-            tensor_err_abs = norm(diff_tensor(:));
-            tensor_err_rel = tensor_err_abs / history.Tstar_norm;
-            
-            history.tensor_errors(t) = tensor_err_abs;
-            history.tensor_errors_relative(t) = tensor_err_rel;
-        end
-        
-        % Extract matrix and compute error if ground truth available
-        if has_ground_truth
-            X_current = extract_matrix_from_tucker(T_tucker);
-            % X_current = (X_current + X_current') / 2;  % Symmetrize
-            [history.matrix_errors(t), ~] = rectify_sign_ambiguity(X_current, Xstar);
-            
-            
-            
-            if verbose && (mod(t, max(1, floor(T_power/10))) == 0 || t == 1)
-                if debug_mode
-                    fprintf('%4d | %.4e | %.4e | %.4e | %.3f\n', ...
-                        t, loss, history.tensor_errors_relative(t), ...
-                        history.matrix_errors(t), mu);
-                else
-                    fprintf('%4d | %.4e | %.4e | %.3f\n', ...
-                        t, loss, history.matrix_errors(t), mu);
-                end
-            end
-        else
-            % Check loss-based threshold if no ground truth
-            if use_rgd_refinement && loss <= precision_threshold
-                if verbose
-                    fprintf('\n[Loss threshold reached: %.2e <= %.2e]\n', ...
-                            loss, precision_threshold);
-                    fprintf('Switching to RGD refinement...\n');
-                end
-                
-                % Run RGD refinement
-                rgd_params = struct();
-                rgd_params.T = rgd_max_iter;
-                rgd_params.mu = rgd_mu;
-                rgd_params.r = tucker_rank;
-                rgd_params.verbose = verbose;
-                
-                [rgd_output, T_tucker] = solve_RGD_tucker(T_tucker, y, tucker_op, rgd_params);
-                
-                % Update history
-                history.rgd_used = true;
-                history.rgd_iterations = rgd_max_iter;
-                history.rgd_loss = rgd_output.Error_function;
-                
-                % Extract final matrix after RGD
-                X0 = extract_matrix_from_tucker(T_tucker);
-                %X0 = (X0 + X0') / 2;
-                
-                if verbose
-                    fprintf('RGD refinement complete: Final loss = %.6e\n', rgd_output.Error_function(end));
-                end
-                
-                % Skip remaining iterations
-                break;
-            end
-            
-            if verbose && (mod(t, max(1, floor(T_power/10))) == 0 || t == 1)
-                fprintf('%4d | %.4e | --         | %.3f\n', t, loss, mu);
-            end
-        end
+    % Prepare parameters for solver
+    solver_params = struct();
+    solver_params.T = T_power;
+    solver_params.mu = mu;
+    solver_params.verbose = verbose;
+    solver_params.use_core_projection = false;
+    if has_ground_truth
+        solver_params.Xstar = Xstar;
+    end
+    
+    % Call the solver (use y_spectral, not y!)
+    [solver_output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, [], y_spectral, tucker_op, [], [], [], m, solver_params);
+    
+    % Update history with solver output
+    history.loss_function = solver_output.Error_function;
+    if has_ground_truth
+        history.matrix_errors = solver_output.Error_Stand;
     end
     
     %% Extract final matrix from Tucker tensor
@@ -418,11 +234,7 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         fprintf('\nExtracting final matrix from Tucker tensor...\n');
     end
     
-    % Only extract if RGD wasn't used (already extracted above)
-    if ~isfield(history, 'rgd_used') || ~history.rgd_used
-        X0 = extract_matrix_from_tucker(T_tucker);
-        %X0 = (X0 + X0') / 2;  % Symmetrize
-    end
+    X0 = extract_matrix_from_tucker_2(T_tucker);  % Use NEW efficient method (no symmetrization)
     
     %% Final error and output
     U0 = [];  % For compatibility
@@ -434,13 +246,6 @@ function [X0, U0, history] = initialize_tensor_lift_tucker_spectral(y, operator,
         if verbose
             fprintf('Final matrix error: %.6e\n', final_error);
             fprintf('Final matrix rank: %d (Tucker rank: %d)\n', rank(X0, 1e-6), tucker_rank);
-            
-            if debug_mode
-                fprintf('[DEBUG] Final tensor error (relative): %.6e\n', ...
-                        history.tensor_errors_relative(end));
-                fprintf('[DEBUG] Final tensor error (absolute): %.6e\n', ...
-                        history.tensor_errors(end));
-            end
         end
     end
     
@@ -460,186 +265,215 @@ function value = get_param(params, field, default)
     end
 end
 
-function X = extract_matrix_from_tucker(T_tucker)
-    % EXTRACT_MATRIX_FROM_TUCKER Extract matrix from Tucker tensor
-    % For 4th-order tensor T = X ⊗ X, extract X via matricization
+function X = extract_matrix_from_tucker_2(T_tucker)
+    % EXTRACT_MATRIX_FROM_TUCKER_2 Extract matrix from Tucker tensor (NEW DEFAULT METHOD)
+    % For 4th-order tensor T = X ⊗ X, extract X via core tensor eigendecomposition
     %
-    % Method: Matricize T to (d1*d2 × d1*d2) and extract leading eigenvector
+    % Method 2 (NEW, EFFICIENT): 
+    %   1. Rectify sign ambiguity: U1≈U3, U2≈U4
+    %   2. Form G_mat (r²×r²) from core tensor G (r×r×r×r)
+    %   3. Eigendecompose G_mat to get leading eigenvector q
+    %   4. Reconstruct v = (U2⊗U1) * q
+    %   5. Reshape v to get X (d1×d2)
+    %
+    % Advantages over Method 1:
+    %   - Eigendecompose r²×r² instead of (d1*d2)×(d1*d2)
+    %   - Much faster when r << d1*d2
+    %   - Numerically more stable
+    %
     % For non-square matrices: d1×d2×d1×d2 tensor
-    % Check whether T_tucker (first form [d1,d2,d1,d2], next form as [d1*d2, d1*d2]) is symmetric 
-
     
     d1 = T_tucker.dims(1);
     d2 = T_tucker.dims(2);
     r = T_tucker.tucker_ranks(1);
-
-    % % 1. Check symmetry in tensor form [d1,d2,d1,d2]
-     T_full = T_tucker.full();
-     T_mat = reshape(T_full, d1*d2, d1*d2);
-    % is_tensor_symmetric = norm(T_full - permute(T_full, [3 4 1 2]), 'fro') < 1e-10;
-    % if is_tensor_symmetric
-    %     disp('T_tucker.full() is symmetric under (1,2) <-> (3,4) permutation.');
-    % else
-    %     disp('T_tucker.full() is NOT symmetric under (1,2) <-> (3,4) permutation.');
-    % end
-
-    % 2. Check symmetry in matricized form [d1*d2, d1*d2]
-    % T_mat_check = reshape(T_full, d1*d2, d1*d2);
-    % if norm(T_mat_check - T_mat_check', 'fro') < 1e-10
-    %     disp('Matricized T_tucker.full() is symmetric.');
-    % else
-    %     disp('Matricized T_tucker.full() is NOT symmetric.');
-    % end
-
-    % % 3. Check symmetry after HOSVD to [r,r,r,r]
-    % T_hosvd = HOSVD(T_full, [r, r, r, r]);
-    % is_hosvd_tensor_symmetric = norm(T_hosvd - permute(T_hosvd, [3 4 1 2]), 'fro') < 1e-10;
-    % if is_hosvd_tensor_symmetric
-    %     disp('HOSVD(T_tucker.full(),[r,r,r,r]) is symmetric under (1,2)<->(3,4) permutation.');
-    % else
-    %     disp('HOSVD(T_tucker.full(),[r,r,r,r]) is NOT symmetric under (1,2)<->(3,4) permutation.');
-    % end
-
-    % T_hosvd_mat = reshape(T_hosvd, d1*d2, d1*d2);
-    % if norm(T_hosvd_mat - T_hosvd_mat', 'fro') < 1e-10
-    %     disp('Matricized HOSVD(T_tucker.full(),[r,r,r,r]) is symmetric.');
-    % else
-    %     disp('Matricized HOSVD(T_tucker.full(),[r,r,r,r]) is NOT symmetric.');
-    % end
     
-    % Compute T in matricized form (d1*d2 × d1*d2) without forming full tensor
-    % T_mat = (U₁ ⊗ U₂) * G_mat * (U₃ ⊗ U₄)'
-    % where G_mat is r² × r² matricization of core
+    % Extract factor matrices and core
+    U1 = T_tucker.U{1};  % d1 × r
+    U2 = T_tucker.U{2};  % d2 × r
+    U3 = T_tucker.U{3};  % d1 × r
+    U4 = T_tucker.U{4};  % d2 × r
+    G = T_tucker.G;      % r × r × r × r
     
-    % U1 = T_tucker.U{1};
-    % U2 = T_tucker.U{2};
-    % U3 = T_tucker.U{3};
-    % U4 = T_tucker.U{4};
-    % G = T_tucker.G;
+    % Step 1: Rectify sign ambiguity to enforce U1≈U3, U2≈U4
+    % For each column, align signs
+    U3_rect = U3;
+    U4_rect = U4;
     
-    % Handle rank-1 case (scalar core)
-    % if isscalar(G)
-    %     % For scalar core, form Kronecker products directly
-    %     U_left = kron(U1, U2);   % (d1*d2) × r
-    %     U_right = kron(U3, U4);  % (d1*d2) × r
-    %     T_mat = G * (U_left * U_right');
-    % else
-        
-    %     % General case: form matricized core and compute
-    %     G_mat = reshape(permute(G, [1,2,3,4]), [r*r, r*r]);
-
-    %     %% Equivalent kron formulation
-    %     % careful kron(U1,U2) is wrong. Kron would run index from U1 to U2 in kron(U2, U1), which is consisent with U1 U2'(:) (vector case as example, our order rule for tucker tensor and vector reshape)
-    %     % Form Kronecker products of factors
-    % %     U_left = kron(U2, U1);   % (d1*d2) × r²
-    % %     U_right = kron(U4, U3);  % (d1*d2) × r²
-    % %  % Matricized tensor: T_mat = U_left * G_mat * U_right'
-    % %     T_mat = U_left * G_mat * U_right';
-
-    %     % % Compare with explicit for-loop computation (slow, for debug)
-    %     % T_mat_for = zeros(d1*d2, d1*d2);
-    %     % for i1 = 1:d1
-    %     %     for i2 = 1:d2
-    %     %     for j1 = 1:d1
-    %     %         for j2 = 1:d2
-    %     %         val = 0;
-    %     %         for a = 1:r
-    %     %             for b = 1:r
-    %     %             for c = 1:r
-    %     %                 for d = 1:r
-    %     %                 val = val + ...
-    %     %                     U1(i1,a) * U2(i2,b) * G(a,b,c,d) * U3(j1,c) * U4(j2,d);
-    %     %                 end
-    %     %             end
-    %     %             end
-    %     %         end
-    %     %         row = (i2-1)*d1 + i1;  i1 1...d1 first!
-    %     %         col = (j2-1)*d1 + j1;
-    %     %         T_mat_for(row, col) = val;
-    %     %         end
-    %     %     end
-    %     %     end
-    %     % end
-        
-    %     % diff_for = norm(T_mat - T_mat_for, 'fro');
-    %     % fprintf('Difference between Kronecker and for-loop T_mat: %.3e\n', diff_for);
-        
-
-    %     % Alternative: form T_full then reshape to matrix, and check consistency
-    %     T_full_alt = T_tucker.full();
-    %     T_mat = reshape(T_full_alt, d1*d2, d1*d2);
-    %     % Check if T_mat_alt is symmetric
-    %     % if norm(T_mat_alt - T_mat_alt', 'fro') < 1e-10
-    %     %     disp('T_mat_alt is symmetric.');
-    %     % else
-    %     %     disp('T_mat_alt is NOT symmetric.');
-    %     % end
-    %     % if norm(T_mat - T_mat_alt, 'fro') > 1e-10
-    %     %     warning('T_mat and T_mat_alt differ: norm = %.3e', norm(T_mat - T_mat_alt, 'fro'));
-    %     % end
-    %     % diff_for = norm(T_mat_alt - T_mat_for, 'fro');
-    %     % fprintf('Difference between full and for-loop T_mat: %.3e\n', diff_for);
-
-    % end
+    for i = 1:r
+        % Align U3(:,i) with U1(:,i)
+        if dot(U1(:,i), U3(:,i)) < 0
+            U3_rect(:,i) = -U3(:,i);
+        end
+        % Align U4(:,i) with U2(:,i)
+        if dot(U2(:,i), U4(:,i)) < 0
+            U4_rect(:,i) = -U4(:,i);
+        end
+    end
     
-    % Check if T_mat is symmetric
-    % if norm(T_mat - T_mat', 'fro') < 1e-10
-    %     disp('T_mat is symmetric.');
-    % else
-    %     disp('T_mat is NOT symmetric.');
-    % end
-    % % Symmetrize
-    % T_mat = (T_mat + T_mat') / 2;
+    % Recompute core tensor with rectified factors
+    % G_rect = H ×₁ U1' ×₂ U2' ×₃ U3_rect' ×₄ U4_rect'
+    % We need to adjust G accordingly
+    % Since we only flipped signs, we can construct sign correction matrices
+    S3 = diag(sign(diag(U3_rect' * U3)));  % Sign correction for mode 3
+    S4 = diag(sign(diag(U4_rect' * U4)));  % Sign correction for mode 4
     
-    % Extract leading eigenvector and reshape to matrix
-    [V, D] = eig(T_mat);
-    [~, idx] = max(abs(diag(D)));
-    v_lead = V(:, idx);
+    % Apply sign corrections to core: G_rect(a,b,c,d) = G(a,b,c,d) * S3(c,c) * S4(d,d)
+    G_rect = G;
+    for c = 1:r
+        for d = 1:r
+            G_rect(:, :, c, d) = G(:, :, c, d) * S3(c,c) * S4(d,d);
+        end
+    end
     
-    % Reshape to matrix (d1 × d2)
-    X = reshape(v_lead, [d1, d2]);
+    % Step 2: Form G_mat (r² × r²) from G_rect
+    % Matricize: modes (1,2) vs modes (3,4)
+    G_mat = reshape(G_rect, [r*r, r*r]);
+    
+    % Note: G_mat may not be symmetric for non-square matrices (d1≠d2)
+    % This is expected and handled by eigendecomposition
+    
+    % Step 3: Eigendecompose G_mat (r² × r²) - much smaller than full tensor!
+    [V_G, D_G] = eig(G_mat);
+    [lambda_max, idx_max] = max(abs(diag(D_G)));
+    q = V_G(:, idx_max);  % Leading eigenvector (r² × 1)
+    
+    % Step 4: Reconstruct v = (U2 ⊗ U1) * q
+    % Since U1≈U3, U2≈U4 after rectification, use U1 and U2
+    U_kron = kron(U2, U1);  % (d1*d2) × r²
+    v = U_kron * q;         % (d1*d2) × 1
+    
+    % Scale by eigenvalue
+    v = v * sqrt(abs(lambda_max));
+    
+    % Step 5: Reshape v to get X (d1 × d2)
+    X = reshape(v, [d1, d2]);
     
     % Normalize
     X = X / norm(X, 'fro');
-    
-    % % Make symmetric
-    % X = (X + X') / 2;
 end
 
-
-
-function T_mat = mode_n_unfold(T, n, dims)
-    % MODE_N_UNFOLD Mode-n unfolding (matricization) of tensor
-    % Returns matrix of size (dims(n) × prod(dims([1:n-1, n+1:end])))
+function X = extract_matrix_from_tucker_3(T_tucker, max_iter, tol)
+    % EXTRACT_MATRIX_FROM_TUCKER_3 Extract matrix using Projected Power Method
+    % For 4th-order tensor T = X ⊗ X, extract X via projected power iteration
+    %
+    % Method 3 (PROJECTED POWER METHOD): 
+    %   1. Rectify sign ambiguity: U1≈U3, U2≈U4
+    %   2. Form G_mat (r²×r²) from core tensor G (r×r×r×r)
+    %   3. Power iteration with projection to diagonal support
+    %   4. Support = {(k-1)*r + k : k=1...r} (diagonal positions)
+    %   5. Reconstruct v = (U2⊗U1) * q
+    %   6. Reshape v to get X (d1×d2)
+    %
+    % Advantages:
+    %   - Exploits diagonal structure: G(i,j,k,l) ≈ 0 unless i=j AND k=l
+    %   - Robust to off-diagonal noise
+    %   - Theoretically converges to diagonal-supported solution
+    %
+    % Inputs:
+    %   T_tucker: Tucker tensor object
+    %   max_iter: Maximum power iterations (default: 50)
+    %   tol: Convergence tolerance (default: 1e-6)
+    %
+    % For non-square matrices: d1×d2×d1×d2 tensor
     
-    N = length(dims);
-    perm = [n, 1:n-1, n+1:N];
-    T_perm = permute(T, perm);
-    T_mat = reshape(T_perm, dims(n), []);
+    if nargin < 2, max_iter = 50; end
+    if nargin < 3, tol = 1e-6; end
+    
+    d1 = T_tucker.dims(1);
+    d2 = T_tucker.dims(2);
+    r = T_tucker.tucker_ranks(1);
+    
+    % Extract factor matrices and core
+    U1 = T_tucker.U{1};  % d1 × r
+    U2 = T_tucker.U{2};  % d2 × r
+    U3 = T_tucker.U{3};  % d1 × r
+    U4 = T_tucker.U{4};  % d2 × r
+    G = T_tucker.G;      % r × r × r × r
+    
+    % Step 1: Rectify sign ambiguity to enforce U1≈U3, U2≈U4
+    U3_rect = U3;
+    U4_rect = U4;
+    
+    for i = 1:r
+        % Align U3(:,i) with U1(:,i)
+        if dot(U1(:,i), U3(:,i)) < 0
+            U3_rect(:,i) = -U3(:,i);
+        end
+        % Align U4(:,i) with U2(:,i)
+        if dot(U2(:,i), U4(:,i)) < 0
+            U4_rect(:,i) = -U4(:,i);
+        end
+    end
+    
+    % Sign correction matrices
+    S3 = diag(sign(diag(U3_rect' * U3)));
+    S4 = diag(sign(diag(U4_rect' * U4)));
+    
+    % Apply sign corrections to core
+    G_rect = G;
+    for c = 1:r
+        for d = 1:r
+            G_rect(:, :, c, d) = G(:, :, c, d) * S3(c,c) * S4(d,d);
+        end
+    end
+    
+    % Step 2: Form G_mat (r² × r²) from G_rect
+    G_mat = reshape(G_rect, [r*r, r*r]);
+    % No symmetrization - use as-is
+    
+    % Step 3: Initialize on diagonal support
+    % Diagonal support: positions (k-1)*r + k for k=1...r
+    q = zeros(r*r, 1);
+    for k = 1:r
+        idx = (k-1)*r + k;
+        q(idx) = 1/sqrt(r);
+    end
+    
+    % Step 4: Projected Power Iteration
+    for iter = 1:max_iter
+        q_old = q;
+        
+        % Power iteration step
+        q = G_mat * q;
+        
+        % Project to diagonal support: keep only (k-1)*r + k positions
+        q_proj = zeros(r*r, 1);
+        for k = 1:r
+            idx = (k-1)*r + k;
+            q_proj(idx) = q(idx);
+        end
+        q = q_proj;
+        
+        % Normalize
+        q_norm = norm(q);
+        if q_norm > 1e-10
+            q = q / q_norm;
+        else
+            warning('extract_matrix_from_tucker_3: q became zero during iteration');
+            break;
+        end
+        
+        % Check convergence
+        conv_err = min(norm(q - q_old), norm(q + q_old));
+        if conv_err < tol
+            break;
+        end
+    end
+    
+    % Step 5: Compute Rayleigh quotient (eigenvalue estimate)
+    lambda_max = q' * G_mat * q;
+    
+    % Step 6: Reconstruct v = (U2 ⊗ U1) * q
+    U_kron = kron(U2, U1);  % (d1*d2) × r²
+    v = U_kron * q;         % (d1*d2) × 1
+    
+    % Scale by eigenvalue
+    v = v * sqrt(abs(lambda_max));
+    
+    % Step 7: Reshape v to get X (d1 × d2)
+    X = reshape(v, [d1, d2]);
+    
+    % Normalize
+    X = X / norm(X, 'fro');
 end
 
-function T_out = tensor_mode_product_helper(T, M, mode)
-    % TENSOR_MODE_PRODUCT_HELPER n-mode product helper function
-    % T_out = T ×_mode M
-    
-    sz = size(T);
-    k = size(M, 1);
-    
-    % Permute so mode is first
-    order = 1:max(ndims(T), mode);
-    order([1, mode]) = [mode, 1];
-    T_perm = permute(T, order);
-    
-    % Reshape to matrix and multiply
-    T_mat = reshape(T_perm, sz(mode), []);
-    T_out_mat = M * T_mat;
-    
-    % Reshape back
-    sz_out = sz;
-    sz_out(mode) = k;
-    sz_out_perm = sz_out(order);
-    T_out_perm = reshape(T_out_mat, sz_out_perm);
-    
-    % Permute back
-    T_out = ipermute(T_out_perm, order);
-end

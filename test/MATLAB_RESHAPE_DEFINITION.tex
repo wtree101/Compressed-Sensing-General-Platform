@@ -1,0 +1,148 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm, algorithmic}
+
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{Mathematical Definition of MATLAB's \texttt{reshape} Operation}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+The MATLAB \texttt{reshape} function reorganizes the elements of an array into a new shape while preserving the total number of elements. This document provides a rigorous mathematical definition of this operation.
+
+\section{Column-Major Ordering}
+
+\begin{definition}[Column-Major Ordering]
+Let $\mathcal{T} \in \mathbb{R}^{n_1 \times n_2 \times \cdots \times n_N}$ be an $N$-order tensor. The \emph{column-major ordering} (also called \emph{Fortran ordering}) is a linear indexing scheme that maps multi-indices to a single linear index.
+
+For a multi-index $(i_1, i_2, \ldots, i_N)$ where $1 \leq i_k \leq n_k$ for each $k$, the corresponding linear index $\ell$ is computed as:
+\[
+\ell = 1 + \sum_{k=1}^{N} (i_k - 1) \prod_{j=1}^{k-1} n_j,
+\]
+where we define $\prod_{j=1}^{0} n_j = 1$ by convention.
+\end{definition}
+
+\begin{remark}
+In column-major ordering, the first index varies fastest. For a matrix $\bm{A} \in \mathbb{R}^{m \times n}$, elements are ordered as:
+\[
+A(1,1), A(2,1), \ldots, A(m,1), A(1,2), A(2,2), \ldots, A(m,2), \ldots, A(m,n).
+\]
+\end{remark}
+
+\section{The \texttt{reshape} Operation}
+
+\begin{definition}[MATLAB \texttt{reshape}]
+Let $\mathcal{T} \in \mathbb{R}^{n_1 \times n_2 \times \cdots \times n_N}$ be an input tensor with $\prod_{i=1}^{N} n_i = P$ elements, and let $(m_1, m_2, \ldots, m_M)$ be target dimensions satisfying $\prod_{j=1}^{M} m_j = P$.
+
+The operation $\mathcal{S} = \texttt{reshape}(\mathcal{T}, [m_1, m_2, \ldots, m_M])$ produces an output tensor $\mathcal{S} \in \mathbb{R}^{m_1 \times m_2 \times \cdots \times m_M}$ defined by the following two-step process:
+
+\textbf{Step 1 (Linearization):} Convert $\mathcal{T}$ to a linear vector $\bm{v} \in \mathbb{R}^P$ using column-major ordering:
+\[
+v_{\ell} = \mathcal{T}(i_1, i_2, \ldots, i_N), \quad \text{where } \ell = 1 + \sum_{k=1}^{N} (i_k - 1) \prod_{j=1}^{k-1} n_j.
+\]
+
+\textbf{Step 2 (Reindexing):} Reconstruct $\mathcal{S}$ from $\bm{v}$ using column-major ordering for the new dimensions:
+\[
+\mathcal{S}(j_1, j_2, \ldots, j_M) = v_{\ell'}, \quad \text{where } \ell' = 1 + \sum_{k=1}^{M} (j_k - 1) \prod_{i=1}^{k-1} m_i.
+\]
+\end{definition}
+
+\section{Special Cases}
+
+\subsection{Vectorization}
+
+When reshaping a tensor to a column vector:
+\[
+\bm{v} = \texttt{reshape}(\mathcal{T}, [P, 1]) \in \mathbb{R}^P,
+\]
+the result is simply the linearization via column-major ordering.
+
+\subsection{Matrix Unfolding (Mode-$(1,2)$ Matricization)}
+
+For a 4th-order tensor $\mathcal{H} \in \mathbb{R}^{d_1 \times d_2 \times d_1 \times d_2}$, the operation
+\[
+\bm{H}_{\text{mat}} = \texttt{reshape}(\mathcal{H}, [d_1 d_2, d_1 d_2])
+\]
+produces a matrix where:
+\begin{itemize}
+    \item The first $d_1 d_2$ dimensions (modes 1 and 2) are vectorized into rows
+    \item The last $d_1 d_2$ dimensions (modes 3 and 4) are vectorized into columns
+\end{itemize}
+
+Explicitly, if we denote the multi-index as $(i, j, k, \ell)$ where $1 \leq i,k \leq d_1$ and $1 \leq j,\ell \leq d_2$, then:
+\[
+\bm{H}_{\text{mat}}(p, q) = \mathcal{H}(i, j, k, \ell),
+\]
+where
+\begin{align*}
+p &= (j-1)d_1 + i, \\
+q &= (\ell-1)d_1 + k.
+\end{align*}
+
+\section{Relationship to Kronecker Products}
+
+\begin{theorem}[Kronecker Product Interpretation]
+Let $\mathcal{H} \in \mathbb{R}^{d_1 \times d_2 \times d_1 \times d_2}$ and let $\bm{U}_1 \in \mathbb{R}^{d_1 \times r_1}$, $\bm{U}_2 \in \mathbb{R}^{d_2 \times r_2}$ be factor matrices. Define the core tensor
+\[
+\mathcal{G} = \mathcal{H} \times_1 \bm{U}_1^\top \times_2 \bm{U}_2^\top \times_3 \bm{U}_1^\top \times_4 \bm{U}_2^\top \in \mathbb{R}^{r_1 \times r_2 \times r_1 \times r_2}.
+\]
+
+Let $\bm{H}_{\text{mat}} = \texttt{reshape}(\mathcal{H}, [d_1 d_2, d_1 d_2])$ and $\bm{G}_{\text{mat}} = \texttt{reshape}(\mathcal{G}, [r_1 r_2, r_1 r_2])$ be the corresponding matrix unfoldings. Then:
+\[
+\bm{G}_{\text{mat}} = (\bm{U}_2^\top \otimes \bm{U}_1^\top) \bm{H}_{\text{mat}} (\bm{U}_2^\top \otimes \bm{U}_1^\top)^\top,
+\]
+where $\otimes$ denotes the Kronecker product.
+\end{theorem}
+
+\begin{proof}
+The mode-$k$ product $\mathcal{T} \times_k \bm{M}$ contracts the $k$-th mode of $\mathcal{T}$ with the matrix $\bm{M}$. When applied sequentially to all four modes and then matricized, the result can be expressed using Kronecker products due to the commutativity of mode products with the vectorization operator and the property
+\[
+\text{vec}(\bm{A}\bm{X}\bm{B}^\top) = (\bm{B} \otimes \bm{A}) \text{vec}(\bm{X}).
+\]
+\end{proof}
+
+\section{MATLAB Syntax}
+
+In MATLAB, the reshape operation is invoked as:
+\begin{verbatim}
+B = reshape(A, [m1, m2, ..., mM])
+\end{verbatim}
+where:
+\begin{itemize}
+    \item \texttt{A} is the input array (any dimensions)
+    \item \texttt{[m1, m2, ..., mM]} specifies the output dimensions
+    \item \texttt{B} is the output array with $\prod m_i = \prod n_i$
+\end{itemize}
+
+\subsection{Example}
+
+\begin{verbatim}
+>> A = [1 2 3; 4 5 6];  % 2x3 matrix
+>> B = reshape(A, [3, 2])
+B =
+     1     5
+     4     3
+     2     6
+\end{verbatim}
+
+The linearization of \texttt{A} in column-major order is \texttt{[1, 4, 2, 5, 3, 6]}, which is then reorganized into a $3 \times 2$ matrix.
+
+\section{Conclusion}
+
+The MATLAB \texttt{reshape} operation is fundamentally defined by:
+\begin{enumerate}
+    \item Linearizing the input array using column-major (Fortran) ordering
+    \item Reindexing the linear array into the new shape using the same ordering convention
+\end{enumerate}
+
+This definition is consistent with tensor algebra operations and enables efficient manipulation of multidimensional arrays while preserving element ordering.
+
+\end{document}
+

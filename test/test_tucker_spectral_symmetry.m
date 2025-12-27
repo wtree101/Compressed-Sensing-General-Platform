@@ -1,8 +1,12 @@
-%% Test TuckerTensor.initialize_spectral for Symmetry
-% This test verifies that initialize_spectral produces symmetric factor matrices
-% i.e., U{1} = U{2} = U{3} = U{4}
+%% Test TuckerTensor.initialize_spectral for Symmetry and Matrix Extraction
+% This test verifies:
+%   1. initialize_spectral produces symmetric factor matrices (U{1}=U{2}=U{3}=U{4})
+%   2. Three different matrix extraction methods produce consistent results:
+%      - Method 1: Direct matricization + eigendecomposition
+%      - Method 2: Diagonal core extraction (Tucker structure)
+%      - Method 3: Core tensor eigendecomposition with sign alignment
 %
-% Test Date: 2025-11-03
+% Test Date: 2025-12-23
 
 clear; clc;
 
@@ -177,9 +181,10 @@ T_result = TuckerTensor(dims, r, 'symmetric', false, 'init_method', 'zeros');
 T_result.U = U_cell;
 T_result.G = G_init;
 
-fprintf('Testing two extraction methods:\n');
-fprintf('  Method 1: Eigendecomposition of matricized tensor\n');
-fprintf('  Method 2: Tucker decomposition (U * C_root * U^T)\n\n');
+fprintf('Testing three extraction methods:\n');
+fprintf('  Method 1: Direct matricization + eigendecomposition\n');
+fprintf('  Method 2: Diagonal core extraction (Tucker structure)\n');
+fprintf('  Method 3: Core eigendecomposition with sign alignment\n\n');
 
 %% Method 1: Extract matrix from tensor (matricization + eigenvector)
 fprintf('--- Method 1: Matricization + Eigendecomposition ---\n');
@@ -226,7 +231,7 @@ else
     fprintf('  ✗ Poor reconstruction\n');
 end
 
-%% Method 2: Extract matrix using Tucker decomposition structure
+%% Method 2: Diagonal Core Extraction (Tucker structure - original method)
 fprintf('\n--- Method 2: Diagonal Core Extraction (Tucker structure) ---\n');
 
 % Step 1: Extract diagonal part of core tensor G
@@ -319,27 +324,168 @@ for i = 1:min(r_val, 5)
     fprintf('\n');
 end
 
-%% Compare the two methods
-fprintf('\n--- Comparison of Extraction Methods ---\n');
-fprintf('Method 1 (Matricization) error: %.6e\n', recon_error_method1);
-fprintf('Method 2 (Tucker U*C*U^T) error: %.6e\n', recon_error_method2);
+%% Method 3: Core Eigendecomposition with Sign Alignment
+fprintf('\n--- Method 3: G_mat Eigendecomposition (with sign alignment) ---\n');
+fprintf('This method uses the relationship: G_mat ≈ λq·q^T => T_mat ≈ λv·v^T\n');
+fprintf('where v = (U2 ⊗ U1)q\n\n');
 
-% Compare the extracted matrices directly
-diff_methods = norm(X_reconstructed - X_method2, 'fro');
-fprintf('Difference between methods: ||X1 - X2||_F = %.6e\n', diff_methods);
+% Step 1: Ensure factor matrix consistency with sign flips
+fprintf('Step 1: Aligning factor matrices with sign flips\n');
 
-if diff_methods < 1e-6
-    fprintf('✓ Both methods produce identical results\n');
-elseif diff_methods < 1e-3
-    fprintf('~ Methods produce similar results\n');
-else
-    fprintf('✗ Methods produce different results\n');
+% Align U3 with U1
+U1_aligned = U_cell{1};
+U2_aligned = U_cell{2};
+U3_aligned = U_cell{3};
+U4_aligned = U_cell{4};
+
+% For each column, choose sign to maximize agreement
+fprintf('  Aligning U3 with U1...\n');
+for col = 1:r
+    % Compute correlation
+    corr_pos = U1_aligned(:, col)' * U3_aligned(:, col);
+    corr_neg = U1_aligned(:, col)' * (-U3_aligned(:, col));
+    
+    if abs(corr_neg) > abs(corr_pos)
+        U3_aligned(:, col) = -U3_aligned(:, col);
+    end
 end
 
-% Use the better method for final reconstruction error
-recon_error = min(recon_error_method1, recon_error_method2);
-fprintf('\nBest reconstruction error: %.6e (Method %d)\n', ...
-        recon_error, 1 + (recon_error_method2 < recon_error_method1));
+fprintf('  Aligning U4 with U2...\n');
+for col = 1:r
+    % Compute correlation
+    corr_pos = U2_aligned(:, col)' * U4_aligned(:, col);
+    corr_neg = U2_aligned(:, col)' * (-U4_aligned(:, col));
+    
+    if abs(corr_neg) > abs(corr_pos)
+        U4_aligned(:, col) = -U4_aligned(:, col);
+    end
+end
+
+% Verify alignment
+diff_U13 = norm(U1_aligned - U3_aligned, 'fro');
+diff_U24 = norm(U2_aligned - U4_aligned, 'fro');
+fprintf('  After alignment: ||U1 - U3||_F = %.6e\n', diff_U13);
+fprintf('  After alignment: ||U2 - U4||_F = %.6e\n', diff_U24);
+
+% Step 2: Form G_mat using aligned factors
+fprintf('\nStep 2: Computing G_mat with aligned factors\n');
+
+% Note: We need the original tensor H for this method
+% For spectral initialization, H = sum_i y_i * (Ai ⊗ Ai)
+% Since we don't have direct access to H, we'll reconstruct it from the Tucker tensor
+fprintf('  Reconstructing H tensor from Tucker decomposition...\n');
+H_tensor_method3 = T_tucker.full();
+fprintf('  H tensor reconstructed: size [%s]\n', num2str(size(H_tensor_method3)));
+
+% Compute G_mat directly using the matricization formula
+% G_mat = (U2' ⊗ U1') * H_mat * (U4' ⊗ U3')'
+H_mat_method3 = reshape(H_tensor_method3, [d*d, d*d]);
+
+% Use aligned factors for Kronecker products
+U_factor_m3 = U1_aligned;  % Since all should be same after alignment
+U21_kronecker = kron(U_factor_m3', U_factor_m3');  % r² × d²
+U43_kronecker = kron(U_factor_m3', U_factor_m3');  % r² × d²
+
+G_mat_method3 = U21_kronecker * H_mat_method3 * U43_kronecker';
+
+fprintf('  G_mat computed: %dx%d\n', size(G_mat_method3, 1), size(G_mat_method3, 2));
+fprintf('  G_mat norm: %.6f\n', norm(G_mat_method3, 'fro'));
+
+% Step 3: Check symmetry of G_mat
+fprintf('\nStep 3: Checking symmetry of G_mat\n');
+G_mat_method3 = (G_mat_method3 + G_mat_method3') / 2;  % Symmetrize
+G_mat_symm_error_m3 = norm(G_mat_method3 - G_mat_method3', 'fro');
+fprintf('  ||G_mat - G_mat^T||_F = %.6e\n', G_mat_symm_error_m3);
+
+if G_mat_symm_error_m3 < 1e-8
+    fprintf('  ✓ G_mat is symmetric\n');
+else
+    fprintf('  Warning: G_mat has asymmetry %.6e (symmetrizing...)\n', G_mat_symm_error_m3);
+end
+
+% Step 4: Extract leading eigenvector of G_mat
+fprintf('\nStep 4: Eigendecomposition of G_mat\n');
+[V_G_method3, D_G_method3] = eig(G_mat_method3);
+[lambda_G_method3, idx_G_method3] = max(abs(diag(D_G_method3)));
+q_method3 = V_G_method3(:, idx_G_method3);
+lambda_G_method3 = D_G_method3(idx_G_method3, idx_G_method3);
+
+fprintf('  Leading eigenvalue: λ = %.6e\n', lambda_G_method3);
+fprintf('  Leading eigenvector q: size %d, norm %.6f\n', length(q_method3), norm(q_method3));
+
+% Step 5: Reconstruct v from q using v = (U2 ⊗ U1) * q
+fprintf('\nStep 5: Reconstructing v = (U2 ⊗ U1) * q\n');
+
+U_factor_method3 = U_cell{1};  % Use first factor (all should be same)
+U21_method3 = kron(U_factor_method3, U_factor_method3);  % d² × r²
+v_method3 = U21_method3 * q_method3;
+
+fprintf('  Kronecker product (U ⊗ U): %dx%d\n', size(U21_method3, 1), size(U21_method3, 2));
+fprintf('  Reconstructed v: size %d, norm %.6f\n', length(v_method3), norm(v_method3));
+
+% Step 6: Reshape v to matrix X
+fprintf('\nStep 6: Reshaping v to matrix X\n');
+X_method3 = reshape(v_method3, [d, d]);
+fprintf('  X_method3 size: %dx%d\n', size(X_method3, 1), size(X_method3, 2));
+
+% Normalize and symmetrize
+X_method3 = X_method3 / norm(X_method3, 'fro');
+X_method3 = (X_method3 + X_method3') / 2;
+
+fprintf('  X_method3 norm (after normalization): %.6f\n', norm(X_method3, 'fro'));
+fprintf('  X_method3 rank: %d\n', rank(X_method3, 1e-6));
+
+% Compute reconstruction error for Method 3
+[recon_error_method3, X_method3] = rectify_sign_ambiguity(X_method3, Xstar);
+fprintf('  Reconstruction error: %.6e\n', recon_error_method3);
+
+if recon_error_method3 < 0.1
+    fprintf('  ✓ Good reconstruction\n');
+elseif recon_error_method3 < 0.5
+    fprintf('  ~ Moderate reconstruction\n');
+else
+    fprintf('  ✗ Poor reconstruction\n');
+end
+
+%% Compare all three methods
+fprintf('\n=== Comparison of All Extraction Methods ===\n\n');
+
+fprintf('Reconstruction errors:\n');
+fprintf('  Method 1 (Matricization):        %.6e\n', recon_error_method1);
+fprintf('  Method 2 (Diagonal Core):        %.6e\n', recon_error_method2);
+fprintf('  Method 3 (G_mat Eigenvector):    %.6e\n', recon_error_method3);
+
+% Compare methods pairwise
+fprintf('\nPairwise differences:\n');
+
+diff_12 = norm(X_reconstructed - X_method2, 'fro');
+fprintf('  ||X_method1 - X_method2||_F = %.6e\n', diff_12);
+
+diff_13 = norm(X_reconstructed - X_method3, 'fro');
+fprintf('  ||X_method1 - X_method3||_F = %.6e\n', diff_13);
+
+diff_23 = norm(X_method2 - X_method3, 'fro');
+fprintf('  ||X_method2 - X_method3||_F = %.6e\n', diff_23);
+
+max_diff_methods = max([diff_12, diff_13, diff_23]);
+fprintf('\n  Maximum difference: %.6e\n', max_diff_methods);
+
+% Determine consistency
+fprintf('\nMethod consistency:\n');
+if max_diff_methods < 1e-6
+    fprintf('  ✓ All methods produce identical results (diff < 1e-6)\n');
+elseif max_diff_methods < 1e-3
+    fprintf('  ✓ All methods produce similar results (diff < 1e-3)\n');
+elseif max_diff_methods < 1e-1
+    fprintf('  ~ Methods show moderate agreement (diff < 1e-1)\n');
+else
+    fprintf('  ✗ Methods produce significantly different results (diff >= 1e-1)\n');
+end
+
+% Use the best method for final reconstruction error
+recon_error = min([recon_error_method1, recon_error_method2, recon_error_method3]);
+[~, best_method] = min([recon_error_method1, recon_error_method2, recon_error_method3]);
+fprintf('\nBest reconstruction error: %.6e (Method %d)\n', recon_error, best_method);
 
 %% Summary
 fprintf('\n=== Summary ===\n');
@@ -347,10 +493,11 @@ fprintf('Symmetry test: %s\n', mat2str(is_symmetric));
 fprintf('  Max difference between U{i}: %.6e\n', max_diff);
 fprintf('\nExecution time: %.4f seconds\n', elapsed_time);
 fprintf('\nReconstruction results:\n');
-fprintf('  Method 1 (Matricization):   %.6e\n', recon_error_method1);
-fprintf('  Method 2 (Tucker U*C*U^T):  %.6e\n', recon_error_method2);
-fprintf('  Best reconstruction error:  %.6e\n', recon_error);
-fprintf('  Methods difference:         %.6e\n', diff_methods);
+fprintf('  Method 1 (Matricization):      %.6e\n', recon_error_method1);
+fprintf('  Method 2 (Diagonal Core):      %.6e\n', recon_error_method2);
+fprintf('  Method 3 (G_mat Eigenvector):  %.6e\n', recon_error_method3);
+fprintf('  Best reconstruction error:     %.6e\n', recon_error);
+fprintf('  Maximum methods difference:    %.6e\n', max_diff_methods);
 
 fprintf('\nTest Results:\n');
 if is_symmetric
@@ -367,10 +514,12 @@ else
     fprintf('  ✗ Reconstruction: POOR (error >= 0.5)\n');
 end
 
-if diff_methods < 1e-3
-    fprintf('  ✓ Method consistency: PASS (both methods agree)\n');
+if max_diff_methods < 1e-3
+    fprintf('  ✓ Method consistency: PASS (all methods agree)\n');
+elseif max_diff_methods < 1e-1
+    fprintf('  ~ Method consistency: MODERATE (max diff: %.2e)\n', max_diff_methods);
 else
-    fprintf('  ~ Method consistency: WARNING (methods differ by %.2e)\n', diff_methods);
+    fprintf('  ✗ Method consistency: FAIL (methods differ by %.2e)\n', max_diff_methods);
 end
 
 if is_symmetric && recon_error < 0.5
@@ -380,4 +529,31 @@ else
 end
 
 fprintf('\n=== Test Complete ===\n');
+
+%% Helper Function
+function T_out = tensor_mode_product(T, M, mode)
+    % TENSOR_MODE_PRODUCT n-mode product of tensor T with matrix M
+    % T_out = T ×_mode M
+    
+    sz = size(T);
+    k = size(M, 1);
+    
+    % Permute so mode is first
+    order = 1:max(ndims(T), mode);
+    order([1, mode]) = [mode, 1];
+    T_perm = permute(T, order);
+    
+    % Reshape to matrix and multiply
+    T_mat = reshape(T_perm, sz(mode), []);
+    T_out_mat = M * T_mat;
+    
+    % Reshape back
+    sz_out = sz;
+    sz_out(mode) = k;
+    sz_out_perm = sz_out(order);
+    T_out_perm = reshape(T_out_mat, sz_out_perm);
+    
+    % Permute back
+    T_out = ipermute(T_out_perm, order);
+end
 

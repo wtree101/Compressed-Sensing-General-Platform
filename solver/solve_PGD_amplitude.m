@@ -20,6 +20,8 @@ function [output, Xl] = solve_PGD_amplitude(Xl, ~, y, operator, d1, d2, ~, m, pa
     %       - T: number of iterations
     %       - mu (or eta): step size
     %       - projection: projection function handle
+    %       - use_preconditioner: enable/disable preconditioning (default: false)
+    %       - epsilon: regularization for preconditioner (default: 1e-8)
     %       - Xstar: ground truth (for error tracking)
     %
     % Outputs:
@@ -55,6 +57,44 @@ function [output, Xl] = solve_PGD_amplitude(Xl, ~, y, operator, d1, d2, ~, m, pa
         error('Projection function must be provided in params.projection');
     end
     
+    % Preconditioner settings
+    if isfield(params, 'use_preconditioner')
+        use_preconditioner = params.use_preconditioner;
+    else
+        use_preconditioner = false;  % Default: no preconditioner for PGD
+    end
+    
+    if isfield(params, 'epsilon')
+        epsilon_reg = params.epsilon;
+    else
+        epsilon_reg = 1e-8;  % Default regularization
+    end
+    
+    % Adaptive stepsize settings
+    if isfield(params, 'use_adaptive_stepsize')
+        use_adaptive_stepsize = params.use_adaptive_stepsize;
+    else
+        use_adaptive_stepsize = false;  % Default: fixed stepsize
+    end
+    
+    if isfield(params, 'line_search_max_iter')
+        ls_max_iter = params.line_search_max_iter;
+    else
+        ls_max_iter = 20;  % Default: max line search iterations
+    end
+    
+    if isfield(params, 'line_search_beta')
+        ls_beta = params.line_search_beta;
+    else
+        ls_beta = 0.5;  % Default: backtracking factor
+    end
+    
+    if isfield(params, 'line_search_c')
+        ls_c = params.line_search_c;
+    else
+        ls_c = 1e-4;  % Default: Armijo constant
+    end
+    
     % Number of measurements
     if nargin < 8 || isempty(m)
         m = length(y);
@@ -64,16 +104,27 @@ function [output, Xl] = solve_PGD_amplitude(Xl, ~, y, operator, d1, d2, ~, m, pa
     Error_Stand = zeros(T, 1);
     Error_function = zeros(T, 1);
     
+    % Track stepsizes if adaptive
+    if use_adaptive_stepsize
+        stepsize_history = zeros(T, 1);
+        eta_prev = eta;  % Initialize previous stepsize
+    end
+    
     % Compute initial errors
-    z = operator.A(Xl);
+    z = operator.A(Xl)/sqrt(m);
     amplitude_residual = y - abs(z);
-    Error_function(1) = (1/(2*m)) * norm(amplitude_residual)^2;
+    Error_function(1) = (1/(2)) * norm(amplitude_residual)^2;
     
     if has_ground_truth
         [Error_Stand(1), ~] = rectify_sign_ambiguity(Xl, Xstar);
     end
     
     %fprintf('PGD-Amplitude: Initial loss = %.6e\n', Error_function(1));
+    % if use_preconditioner
+    %     fprintf('PGD-Amplitude: Using diagonal preconditioner with ε = %.2e\n', epsilon_reg);
+    % else
+    %     fprintf('PGD-Amplitude: Standard PGD (no preconditioner)\n');
+    % end
     
     % PGD iteration loop
     for t = 1:T-1
@@ -104,16 +155,79 @@ function [output, Xl] = solve_PGD_amplitude(Xl, ~, y, operator, d1, d2, ~, m, pa
             gradient = reshape(gradient, [d1, d2]);
         end
         
-        % Step 2: Gradient descent step
-        Xl_temp = Xl - eta * gradient;
+        % Step 2: Apply preconditioner (if enabled)
+        if use_preconditioner
+            % Update diagonal preconditioners:
+            % L_t = ε_t I + diag(G_t G_t^T)
+            % R_t = ε_t I + diag(G_t^T G_t)
+            L_t_diag = epsilon_reg + sum(gradient .* gradient, 2);  % diag(G_t G_t^T)
+            R_t_diag = epsilon_reg + sum(gradient .* gradient, 1)';  % diag(G_t^T G_t)
+            
+            % Compute L_t^{-1/4} and R_t^{-1/4} for gradient preconditioning
+            L_t_inv_quarter = L_t_diag .^ (-0.25);
+            R_t_inv_quarter = R_t_diag .^ (-0.25);
+            
+            % Apply preconditioning: D_t = L_t^{-1/4} G_t R_t^{-1/4}
+            preconditioned_gradient = (L_t_inv_quarter * ones(1, d2)) .* gradient .* (ones(d1, 1) * R_t_inv_quarter');
+        else
+            % No preconditioner: use gradient directly
+            preconditioned_gradient = gradient;
+        end
         
-        % Step 3: Projection onto constraint set (e.g., rank-r matrices)
+        % Step 2b: Determine stepsize (adaptive or fixed)
+        if use_adaptive_stepsize
+            % Adaptive stepsize via backtracking line search
+            % Find η that satisfies Armijo condition:
+            % ℓ(X_t - η*D_t) ≤ ℓ(X_t) - c*η*<∇ℓ(X_t), D_t>
+            
+            % Smart initialization: start from previous successful stepsize
+            % Optionally try a slightly larger stepsize (1.05x growth factor)
+            eta_t = min(1.05 * eta_prev, 5 * eta);  % Grow but cap at 5x initial
+            current_loss = Error_function(t);
+            
+            % Directional derivative: <gradient, preconditioned_gradient> (Frobenius inner product)
+            direc_deriv = sum(gradient(:) .* preconditioned_gradient(:));
+            
+            % Backtracking line search
+            for ls_iter = 1:ls_max_iter
+                % Try step with current eta_t
+                Xl_trial = Xl - eta_t * preconditioned_gradient;
+                
+                % Apply projection
+                Xl_trial = params.projection(Xl_trial);
+                
+                % Compute trial loss
+                z_trial = operator.A(Xl_trial) / sqrt(m);
+                residual_trial = y - abs(z_trial);
+                loss_trial = (1/(2)) * norm(residual_trial)^2;
+                
+                % Check Armijo condition
+                if loss_trial <= current_loss - ls_c * eta_t * direc_deriv
+                    break;  % Accept this stepsize
+                end
+                
+                % Reduce stepsize
+                eta_t = ls_beta * eta_t;
+            end
+            
+            % Store stepsize for tracking
+            stepsize_history(t) = eta_t;
+            eta_prev = eta_t;  % Remember for next iteration
+        else
+            % Fixed stepsize
+            eta_t = eta;
+        end
+        
+        % Step 3: Gradient descent step with chosen stepsize
+        Xl_temp = Xl - eta_t * preconditioned_gradient;
+        
+        % Step 4: Projection onto constraint set (e.g., rank-r matrices)
         Xl = params.projection(Xl_temp);
         
-        % Step 4: Compute errors for iteration t+1
-        z_new = operator.A(Xl);
+        % Step 5: Compute errors for iteration t+1
+        z_new = operator.A(Xl)/sqrt(m);
         amplitude_residual_new = y - abs(z_new);
-        Error_function(t+1) = (1/(2*m)) * norm(amplitude_residual_new)^2;
+        Error_function(t+1) = (1/(2)) * norm(amplitude_residual_new)^2;
         
         if has_ground_truth
             [Error_Stand(t+1), ~] = rectify_sign_ambiguity(Xl, Xstar);
@@ -139,4 +253,11 @@ function [output, Xl] = solve_PGD_amplitude(Xl, ~, y, operator, d1, d2, ~, m, pa
     output = struct();
     output.Error_Stand = Error_Stand;
     output.Error_function = Error_function;
+    output.use_preconditioner = use_preconditioner;
+    output.epsilon = epsilon_reg;
+    
+    % Add stepsize history if adaptive
+    if use_adaptive_stepsize
+        output.stepsize_history = stepsize_history;
+    end
 end

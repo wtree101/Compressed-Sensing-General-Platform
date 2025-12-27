@@ -1,9 +1,10 @@
 function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d2, params)
-% INITIALIZE_TENSOR_LIFT Tensor-lifted initialization for matrix recovery
+% INITIALIZE_TENSOR_LIFT Tensor-lifted initialization for matrix recovery (Non-Symmetric)
 %
 % This function performs initialization by lifting the matrix recovery problem
 % to a tensor space, running tensor PGD with projection, and extracting the matrix.
-% Uses the formulation X = UU^T viewed as fourth-order tensor T = X ⊗ X.
+% Uses the formulation X (d1 x d2) viewed as fourth-order tensor T = X ⊗ X.
+% SUPPORTS NON-SYMMETRIC MATRICES (d1 can differ from d2).
 %
 % Inputs:
 %   y        - Measurement vector (m x 1)
@@ -30,12 +31,8 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
 %              .final_error: Final matrix error after extraction (if Xstar provided)
 %              .method: 'tensor_lift'
 
-    %% Validate symmetric case
-    if d1 ~= d2
-        error('Tensor lift initialization requires symmetric matrices: d1 must equal d2');
-    end
-    d = d1;
-    n = d * d;  % Flattened matrix dimension
+    %% Setup dimensions (supports non-symmetric matrices)
+    n = d1 * d2;  % Flattened matrix dimension
     m = length(y);
     
     %% Extract parameters
@@ -57,8 +54,8 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
     debug_mode = isfield(params, 'debug') && params.debug;
     
     if verbose
-        fprintf('--- Tensor Lift Initialization (PGD) ---\n');
-        fprintf('Matrix: %dx%d, Rank: %d, Measurements: %d\n', d, d, r, m);
+        fprintf('--- Tensor Lift Initialization (PGD, Non-Symmetric) ---\n');
+        fprintf('Matrix: %dx%d, Rank: %d, Measurements: %d\n', d1, d2, r, m);
         fprintf('Tensor PGD iterations: %d\n', T_power);
         if debug_mode
             fprintf('DEBUG MODE: ON\n');
@@ -72,7 +69,7 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
     
     if has_ground_truth
         Xstar = params.Xstar;
-        tensor_Xstar = create_tensor_from_matrix(Xstar, d);
+        tensor_Xstar = create_tensor_from_matrix(Xstar, d1, d2);
         
         if debug_mode
             fprintf('\n=== DEBUG: Ground Truth Tensor ===\n');
@@ -86,7 +83,7 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
             % Check a few entries
             fprintf('Verification: T(i,j,k,l) = X(i,j) * X(k,l)\n');
             for test_iter = 1:3
-                i = randi(d); j = randi(d); k = randi(d); l = randi(d);
+                i = randi(d1); j = randi(d2); k = randi(d1); l = randi(d2);
                 tensor_val = tensor_Xstar(i, j, k, l);
                 matrix_val = Xstar(i, j) * Xstar(k, l);
                 diff = abs(tensor_val - matrix_val);
@@ -113,23 +110,23 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
     for j = 1:n
         e_j = zeros(n, 1);
         e_j(j) = 1;
-        E_j = reshape(e_j, [d, d]);
+        E_j = reshape(e_j, [d1, d2]);
         A_matrix(:, j) = operator.A(E_j);
     end
     
     % Create tensor operators: A_i ⊗ A_i for each measurement
+    % NO SYMMETRIZATION - keep original structure
     for i = 1:m
-        Ai = reshape(A_matrix(i, :), [d, d]);
-        Ai = (Ai + Ai')/2;  % Symmetrize
+        Ai = reshape(A_matrix(i, :), [d1, d2]);
         % Fourth-order tensor A_i ⊗ A_i
-        AiAi = reshape(Ai, n, 1) * reshape(Ai, 1, n);  % d^2 x d^2
+        AiAi = reshape(Ai, n, 1) * reshape(Ai, 1, n);  % (d1*d2) x (d1*d2)
         A_tensor(i, :) = AiAi(:)';  % Flatten and store
     end
     
     % Define tensor operators
     tensor_operator = struct();
-    tensor_operator.A = @(T) tensor_forward(T, A_tensor, d);
-    tensor_operator.A_star = @(z) tensor_adjoint(z, A_tensor, d);
+    tensor_operator.A = @(T) tensor_forward(T, A_tensor, d1, d2);
+    tensor_operator.A_star = @(z) tensor_adjoint(z, A_tensor, d1, d2);
     
     %% Tensor measurements (same as matrix measurements for phase retrieval)
     y_tensor = y;  % Measurements are the same: |<A_i, X>|
@@ -178,7 +175,7 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
     
     %% Tensor PGD Initialization
     % Initialize with random tensor
-    Xl_tensor_init = zeros(d, d, d, d);
+    Xl_tensor_init = zeros(d1, d2, d1, d2);
     % Xl_tensor_init = Xl_tensor_init / norm(Xl_tensor_init(:));
     
     % Step size for tensor PGD
@@ -204,7 +201,7 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
     end
     
     % Use solve_PGD to run tensor PGD
-    [solver_output, Xl_tensor_final] = solve_PGD(Xl_tensor_init, [], y_tensor, tensor_operator, d, [], [], m, solver_params);
+    [solver_output, Xl_tensor_final] = solve_PGD(Xl_tensor_init, [], y_tensor, tensor_operator, d1, d2, [], m, solver_params);
     
     % Store history from solver output
     if has_ground_truth
@@ -219,20 +216,21 @@ function [X0, U0, history] = initialize_tensor_lift_efficient(y, operator, d1, d
     
     extract_params = struct();
     extract_params.r = r;
+    extract_params.d1 = d1;
+    extract_params.d2 = d2;
     extract_params.method = 'eig';  % Use eigenvalue extraction
     extract_params.verbose = false;
     
     X0 = extract_matrix_from_tensor(Xl_tensor_final, extract_params);
 
     %% run some more power iterations (with projection)
-    % run 10 steps of power method to refine, based on extracted X0
-    solver_params.T_power = 20;
+    % run 20 steps of power method to refine, based on extracted X0
+    solver_params.T_power = 0;
     solver_params.Init = X0(:);
-    X0 = initialize_power_method(y, operator, d, d, solver_params);
+    X0 = initialize_power_method(y, operator, d1, d2, solver_params);
 
     
-    % Symmetrize (since we're using X = UU^T formulation)
-    X0 = (X0 + X0') / 2;
+    % NO SYMMETRIZATION - keep original non-symmetric structure
     
     % Apply projection if provided
     if has_projection
@@ -277,21 +275,52 @@ function value = get_param(params, field, default)
     end
 end
 
-function T = create_tensor_from_matrix(X, d)
-    % CREATE_TENSOR_FROM_MATRIX Create 4th-order tensor T = X ⊗ X
+function T = create_tensor_from_matrix(X, d1, d2)
+    % CREATE_TENSOR_FROM_MATRIX Create 4th-order tensor T = X ⊗ X (Non-Symmetric)
     % 
-    % For matrix X of size (d x d), creates tensor T of size (d x d x d x d)
+    % For matrix X of size (d1 x d2), creates tensor T of size (d1 x d2 x d1 x d2)
     % such that T(i,j,k,l) = X(i,j) * X(k,l)
     %
     % Input:
-    %   X - Matrix of size (d x d)
-    %   d - Dimension
+    %   X  - Matrix of size (d1 x d2)
+    %   d1 - Row dimension
+    %   d2 - Column dimension
     %
     % Output:
-    %   T - Fourth-order tensor of size (d x d x d x d)
+    %   T - Fourth-order tensor of size (d1 x d2 x d1 x d2)
     
     % Vectorize for efficiency
-    X_vec = X(:);  % d^2 x 1
-    T_mat = X_vec * X_vec';  % d^2 x d^2 (outer product)
-    T = reshape(T_mat, [d, d, d, d]);  % Reshape to 4th-order tensor
+    X_vec = X(:);  % (d1*d2) x 1
+    T_mat = X_vec * X_vec';  % (d1*d2) x (d1*d2) (outer product)
+    T = reshape(T_mat, [d1, d2, d1, d2]);  % Reshape to 4th-order tensor
+end
+
+function y = tensor_forward(T, A_tensor, d1, d2)
+    % TENSOR_FORWARD Apply tensor forward operator: y_i = <A_i ⊗ A_i, T>
+    %
+    % Inputs:
+    %   T        - Fourth-order tensor of size (d1 x d2 x d1 x d2)
+    %   A_tensor - Tensor operator matrix (m x (d1*d2)^2)
+    %   d1, d2   - Matrix dimensions
+    %
+    % Output:
+    %   y - Measurement vector (m x 1)
+    
+    T_vec = T(:);  % Flatten tensor to (d1*d2)^2 x 1
+    y = A_tensor * T_vec;  % m x 1
+end
+
+function T = tensor_adjoint(z, A_tensor, d1, d2)
+    % TENSOR_ADJOINT Apply tensor adjoint operator: T = sum_i z_i * (A_i ⊗ A_i)
+    %
+    % Inputs:
+    %   z        - Coefficient vector (m x 1)
+    %   A_tensor - Tensor operator matrix (m x (d1*d2)^2)
+    %   d1, d2   - Matrix dimensions
+    %
+    % Output:
+    %   T - Fourth-order tensor of size (d1 x d2 x d1 x d2)
+    
+    T_vec = A_tensor' * z;  % (d1*d2)^2 x 1
+    T = reshape(T_vec, [d1, d2, d1, d2]);  % Reshape to 4th-order tensor
 end

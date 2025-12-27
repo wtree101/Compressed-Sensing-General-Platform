@@ -606,6 +606,44 @@ classdef TuckerTensor
             mem = core_mem + factor_mem;
         end
         
+        function obj_copy = copy(obj)
+            % COPY Create a deep copy of the TuckerTensor object
+            %
+            % Usage:
+            %   T_copy = T.copy()
+            %
+            % Output:
+            %   obj_copy - New TuckerTensor object with copied data
+            %
+            % Note: This creates a deep copy, so modifications to obj_copy
+            %       will not affect the original object obj.
+            
+            % Create new TuckerTensor with same structure
+            obj_copy = TuckerTensor(obj.dims, obj.tucker_ranks, ...
+                                    'symmetric', obj.is_symmetric, ...
+                                    'init_method', 'zeros', ...
+                                    'debug', obj.debug);
+            
+            % Deep copy core tensor
+            obj_copy.G = obj.G;  % MATLAB automatically creates a copy
+            
+            % Deep copy factor matrices
+            obj_copy.U = cell(1, obj.order);
+            for i = 1:obj.order
+                obj_copy.U{i} = obj.U{i};  % MATLAB automatically creates a copy
+            end
+            
+            % Deep copy Up matrices (orthogonal components)
+            obj_copy.Up = cell(1, obj.order);
+            for i = 1:obj.order
+                if ~isempty(obj.Up{i})
+                    obj_copy.Up{i} = obj.Up{i};  % MATLAB automatically creates a copy
+                else
+                    obj_copy.Up{i} = [];
+                end
+            end
+        end
+        
         function display(obj)
             % DISPLAY Custom display method
             fprintf('TuckerTensor: Order-%d\n', obj.order);

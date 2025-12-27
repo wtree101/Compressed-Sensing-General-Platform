@@ -24,7 +24,7 @@ fprintf('=== Low-Rank Matrix Recovery (Symmetric & Non-Symmetric): Phase Diagram
 % Algorithm and trial configuration
 trial_func = @onetrial_Mat;
 alg_func = @solve_PGD_amplitude;
-alg_name = 'PPM';  % TNN = Tensor Nuclear Norm
+alg_name = 'Trial';  % TNN = Tensor Nuclear Norm
 % tensorSpectralinit
 % MatsubGD_TNNinit
 %PPM
@@ -36,24 +36,24 @@ nonlinear_func = @(y) abs(y);  % Phase retrieval model (set to [] or @(y) abs(y)
 pre_func = [];  % Optional: @(y) set_zero_outside_range_tensor(y)
 
 % Initialization method
-init_method = @initialize_tensor_lift_tucker_spectral;  % Options: @initialize_tensor_lift, @initialize_tensor_lift_tucker_spectral, @initialize_power_method, @Initialization, @Initialization_random
-T_power = 0;  % Number of power iterations (if using power method initialization)
+init_method = @initialize_tensor_lift_efficient;  % Options: @initialize_tensor_lift, @initialize_tensor_lift_tucker_spectral, @initialize_power_method, @Initialization, @Initialization_random
+T_power = 20;  % Number of power iterations (if using power method initialization)
 
 
 %% Matrix dimensions and problem setup
-d1 = 10;             % Matrix row dimension
-d2 = 20;             % Matrix column dimension (d1 x d2)
+d1 = 20;             % Matrix row dimension
+d2 = 30;             % Matrix column dimension (d1 x d2)
 kappa = 2;           % Condition number
          % Target rank for ground truth
 r_max = 3;          % Maximum rank to test
-r_grid = 1:1:r_max;     % Rank values to test
-
+r_grid = 3:1:r_max;     % Rank values to test
+rng(42);
 % Experiment parameters
-trial_num = 5;      % Number of trials per (r, m) pair
+trial_num = 3;      % Number of trials per (r, m) pair
 verbose = 0;         % 0: minimal output, 1: detailed output
 add_flag = 0;        % 0: overwrite existing data, 1: add to existing data
-T = 200;             % Number of iterations per trial
-problem_flag = 2;
+T = 100;             % Number of iterations per trial
+problem_flag = 0;
 use_parallel = false; % true: use parpool/parfor, false: sequential computation
 
 % Grid generation parameters

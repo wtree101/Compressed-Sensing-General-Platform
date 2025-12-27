@@ -1,20 +1,21 @@
 function X = extract_matrix_from_tensor(T, params)
-% EXTRACT_MATRIX_FROM_TENSOR Extract matrix X from 4th order tensor T
+% EXTRACT_MATRIX_FROM_TENSOR Extract matrix X from 4th order tensor T (Non-Symmetric)
 % 
 % This function extracts a matrix X from a 4th order tensor T assuming 
-% the structure T ≈ X ⊗ X (tensor product form) for symmetric tensor 
-% phase retrieval problems.
+% the structure T ≈ X ⊗ X (tensor product form).
+% SUPPORTS NON-SYMMETRIC MATRICES (d1 can differ from d2).
 %
 % Inputs:
-%   T      - 4th order tensor of size d x d x d x d
+%   T      - 4th order tensor of size d1 x d2 x d1 x d2
 %   params - Structure with fields:
 %            .r      - Target rank for extracted matrix (required)
+%            .d1     - Row dimension (optional, inferred from T if not provided)
+%            .d2     - Column dimension (optional, inferred from T if not provided)
 %            .method - Extraction method: 'eig', 'svd', 'hosvd' (optional, default: 'eig')
-%            .symmetrize - Whether to enforce symmetry (optional, default: true)
 %            .verbose    - Print diagnostic info (optional, default: false)
 %
 % Output:
-%   X      - Extracted symmetric matrix of size d x d with rank <= r
+%   X      - Extracted matrix of size d1 x d2 with rank <= r
 %
 % Methods:
 %   'eig'   - Eigendecomposition of matricized tensor (most stable)
@@ -28,7 +29,6 @@ function X = extract_matrix_from_tensor(T, params)
     
     % Default parameters
     if ~isfield(params, 'method'), params.method = 'eig'; end
-    if ~isfield(params, 'symmetrize'), params.symmetrize = true; end
     if ~isfield(params, 'verbose'), params.verbose = false; end
     
     % Get tensor dimensions
@@ -37,60 +37,67 @@ function X = extract_matrix_from_tensor(T, params)
     end
     
     [d1, d2, d3, d4] = size(T);
-    if d1 ~= d2 || d2 ~= d3 || d3 ~= d4
-        error('Tensor must be d x d x d x d (currently [%d,%d,%d,%d])', d1, d2, d3, d4);
+    
+    % Check tensor structure: T should be d1 x d2 x d1 x d2
+    if d1 ~= d3 || d2 ~= d4
+        error('Tensor must be d1 x d2 x d1 x d2 (currently [%d,%d,%d,%d])', d1, d2, d3, d4);
     end
-    d = d1;
+    
+    % Allow d1, d2 to be provided in params (for verification)
+    if isfield(params, 'd1') && params.d1 ~= d1
+        warning('params.d1=%d does not match tensor dimension d1=%d', params.d1, d1);
+    end
+    if isfield(params, 'd2') && params.d2 ~= d2
+        warning('params.d2=%d does not match tensor dimension d2=%d', params.d2, d2);
+    end
+    
     r = params.r;
     
     % Apply method-specific extraction
     switch lower(params.method)
         case 'eig'
-            X = extract_eigen_method(T, d, r, params);
+            X = extract_eigen_method(T, d1, d2, r, params);
         case 'svd'
-            X = extract_svd_method(T, d, r, params);
+            X = extract_svd_method(T, d1, d2, r, params);
         case 'hosvd'
-            X = extract_hosvd_method(T, d, r, params);
+            X = extract_hosvd_method(T, d1, d2, r, params);
         otherwise
             error('Unknown method: %s. Use ''eig'', ''svd'', or ''hosvd''', params.method);
     end
 
-
-    
-    % Check whether X is symmetric
-    is_symmetric = norm(X - X', 'fro') < 1e-10;
-    if params.verbose
-        fprintf('Is X symmetric? %d\n', is_symmetric);
-    end
-    if params.symmetrize
-        X = (X + X') / 2;
-        X = project_symmetric_low_rank(X, r);
+    % NO SYMMETRIZATION - keep original non-symmetric structure
+    % Apply low-rank projection if needed
+    if rank(X) > r
+        [U, S, V] = svd(X);
+        X = U(:, 1:r) * S(1:r, 1:r) * V(:, 1:r)';
     end
     
     if params.verbose
-        fprintf('Final extracted matrix: norm=%.3f, rank=%d, symmetry_error=%.2e\n', ...
-                norm(X,'fro'), rank(X), norm(X-X','fro'));
+        fprintf('Final extracted matrix: norm=%.3f, rank=%d, size=[%d,%d]\n', ...
+                norm(X,'fro'), rank(X), size(X,1), size(X,2));
     end
 end
 
-function X = extract_eigen_method(T, d, ~, params)
-% Eigendecomposition method (most stable for symmetric tensors)
+function X = extract_eigen_method(T, d1, d2, ~, params)
+% Eigendecomposition method (most stable for tensors)
+% For non-symmetric case, extracts from matricized tensor
 
-    n = d * d;
+    n = d1 * d2;
     
     % Mode-(1,2) matricization: reshape T to n x n matrix
     T_mat = reshape(T, [n, n]);
     
     if params.verbose
-        fprintf('Mode-(1,2) matricization: %dx%d -> %dx%d\n', d, d, n, n);
-        fprintf('T_mat symmetry error: %.2e\n', norm(T_mat - T_mat', 'fro'));
+        fprintf('Mode-(1,2) matricization: %dx%d -> %dx%d\n', d1, d2, n, n);
+        fprintf('T_mat symmetry check: %.2e\n', norm(T_mat - T_mat', 'fro'));
     end
     
-    % Symmetrize the matricized tensor
-    T_mat = (T_mat + T_mat') / 2;
+    % For non-symmetric case, symmetrize only for eigendecomposition stability
+    % but don't enforce symmetry on final result
+    T_mat_sym = (T_mat + T_mat') / 2;
     
     % Extract leading eigenvector
-    [V, D] = eig(T_mat);
+    [V, D] = eig(T_mat_sym);
     [~, idx] = sort(abs(diag(D)), 'descend');
     v = V(:, idx(1)); % Leading eigenvector
     lambda = D(idx(1), idx(1));
@@ -99,14 +106,14 @@ function X = extract_eigen_method(T, d, ~, params)
         fprintf('Leading eigenvalue: %.6f\n', lambda);
     end
     
-    % Reshape to matrix form
-    X = reshape(v * sqrt(abs(lambda)), [d, d]);
+    % Reshape to matrix form (d1 x d2)
+    X = reshape(v * sqrt(abs(lambda)), [d1, d2]);
 end
 
-function X = extract_svd_method(T, d, ~, params)
-% SVD-based method (alternative approach)
+function X = extract_svd_method(T, d1, d2, ~, params)
+% SVD-based method (alternative approach for non-symmetric case)
 
-    n = d * d;
+    n = d1 * d2;
     
     % Mode-(1,2) matricization
     T_mat = reshape(T, [n, n]);
@@ -126,13 +133,13 @@ function X = extract_svd_method(T, d, ~, params)
     u1 = U(:, 1);
     v1 = V(:, 1);
     
-    % For symmetric case, u1 ≈ v1, so use average
+    % For non-symmetric case, average u1 and v1 for stability
     x_vec = (u1 + v1) / 2 * sqrt(S(1,1));
-    X = reshape(x_vec, [d, d]);
+    X = reshape(x_vec, [d1, d2]);
 end
 
-function X = extract_hosvd_method(T, d, r, params)
-% HOSVD preprocessing method (for noisy tensors)
+function X = extract_hosvd_method(T, d1, d2, r, params)
+% HOSVD preprocessing method (for noisy tensors, non-symmetric case)
 
     if params.verbose
         fprintf('HOSVD method: preprocessing with rank [%d,%d,%d,%d]\n', r, r, r, r);
@@ -143,6 +150,6 @@ function X = extract_hosvd_method(T, d, r, params)
     T_clean = HOSVD(T, rank_vec);
     
     % Then use eigendecomposition on cleaned tensor
-    X = extract_eigen_method(T_clean, d, r, params);
+    X = extract_eigen_method(T_clean, d1, d2, r, params);
 end
 

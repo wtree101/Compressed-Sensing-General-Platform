@@ -1,0 +1,565 @@
+%% Test: Core Projection Benefit Analysis
+% Test whether projecting the core tensor to diagonal structure improves:
+%   1. Convergence speed
+%   2. Required measurements (m)
+%   3. Robustness to ground truth without abs()
+%
+% Compares two versions:
+%   - Version A: WITHOUT core projection (current default)
+%   - Version B: WITH core projection (T_tucker.G = Core_proj)
+
+clear; clc;
+fprintf('╔════════════════════════════════════════════════════════════╗\n');
+fprintf('║  Core Projection Benefit Test                             ║\n');
+fprintf('╚════════════════════════════════════════════════════════════╝\n\n');
+
+%% Test Configuration
+test_cases = {
+    % Test 1: Standard case with abs()
+    struct('name', 'Standard (with abs)', ...
+           'd1', 40, 'd2', 30, 'r', 3, 'm', 1500, ...
+           'use_abs', true, 'mu', 0.1, 'T', 200, 'rng_seed', 42);
+    
+    % Test 2: Smaller m (test if projection helps with fewer measurements)
+    struct('name', 'Small m (with abs)', ...
+           'd1', 40, 'd2', 30, 'r', 3, 'm', 1500, ...
+           'use_abs', true, 'mu', 0.1, 'T', 200, 'rng_seed', 45);
+    
+    % Test 3: Very small m (challenging case)
+    struct('name', 'Very Small m (with abs)', ...
+           'd1', 40, 'd2', 30, 'r', 3, 'm', 1500, ...
+           'use_abs', true, 'mu', 0.1, 'T', 200, 'rng_seed', 45);
+    
+    % Test 4: Without abs (more challenging)
+    struct('name', 'Standard (NO abs)', ...
+           'd1', 40, 'd2', 30, 'r', 2, 'm', 1500, ...
+           'use_abs', false, 'mu', 0.1, 'T', 200, 'rng_seed', 45);
+    
+    % Test 5: Without abs + small m (most challenging)
+    struct('name', 'Small m (NO abs)', ...
+           'd1', 40, 'd2', 30, 'r', 3, 'm', 1500, ...
+           'use_abs', false, 'mu', 0.1, 'T', 200, 'rng_seed', 45);
+};
+
+num_tests = length(test_cases);
+results = cell(num_tests, 1);
+
+%% Run All Test Cases
+for test_idx = 1:num_tests
+    tc = test_cases{test_idx};
+    fprintf('\n');
+    fprintf('════════════════════════════════════════════════════════════\n');
+    fprintf('Test %d/%d: %s\n', test_idx, num_tests, tc.name);
+    fprintf('  Config: d1=%d, d2=%d, r=%d, m=%d, use_abs=%s\n', ...
+            tc.d1, tc.d2, tc.r, tc.m, mat2str(tc.use_abs));
+    fprintf('════════════════════════════════════════════════════════════\n');
+    
+    % Run test
+    result = run_single_test(tc);
+    results{test_idx} = result;
+    
+    % Display summary
+    fprintf('\n--- Results Summary ---\n');
+    fprintf('WITHOUT Projection:\n');
+    fprintf('  Final Error: %.6e, Final Loss: %.6e\n', ...
+            result.no_proj.error_final, result.no_proj.loss_final);
+    fprintf('WITH Projection:\n');
+    fprintf('  Final Error: %.6e, Final Loss: %.6e\n', ...
+            result.with_proj.error_final, result.with_proj.loss_final);
+    fprintf('Improvement:\n');
+    if result.with_proj.error_final < result.no_proj.error_final
+        improvement = (result.no_proj.error_final - result.with_proj.error_final) / result.no_proj.error_final * 100;
+        fprintf('  ✓ Error reduced by %.2f%%\n', improvement);
+    else
+        degradation = (result.with_proj.error_final - result.no_proj.error_final) / result.no_proj.error_final * 100;
+        fprintf('  ✗ Error increased by %.2f%%\n', degradation);
+    end
+end
+
+%% Generate Comprehensive Comparison Report
+fprintf('\n\n');
+fprintf('╔════════════════════════════════════════════════════════════╗\n');
+fprintf('║  Comprehensive Comparison Report                          ║\n');
+fprintf('╚════════════════════════════════════════════════════════════╝\n\n');
+
+% Create comparison table
+fprintf('%-25s | %-15s | %-15s | %-15s\n', 'Test Case', 'No Proj Error', 'With Proj Error', 'Improvement');
+fprintf('%-25s-|%-15s-|%-15s-|%-15s\n', repmat('-', 1, 25), repmat('-', 1, 15), repmat('-', 1, 15), repmat('-', 1, 15));
+
+for test_idx = 1:num_tests
+    tc = test_cases{test_idx};
+    result = results{test_idx};
+    
+    error_no = result.no_proj.error_final;
+    error_with = result.with_proj.error_final;
+    
+    if error_with < error_no
+        improvement = (error_no - error_with) / error_no * 100;
+        improve_str = sprintf('✓ %.1f%%', improvement);
+    else
+        degradation = (error_with - error_no) / error_no * 100;
+        improve_str = sprintf('✗ +%.1f%%', degradation);
+    end
+    
+    fprintf('%-25s | %.6e    | %.6e    | %s\n', ...
+            tc.name, error_no, error_with, improve_str);
+end
+
+fprintf('\n');
+
+%% Convergence Speed Analysis
+fprintf('--- Convergence Speed Analysis ---\n');
+fprintf('(Iterations to reach 1e-3 error, or "N/A" if not reached)\n\n');
+fprintf('%-25s | %-15s | %-15s | %-15s\n', 'Test Case', 'No Proj Iters', 'With Proj Iters', 'Speed Up');
+fprintf('%-25s-|%-15s-|%-15s-|%-15s\n', repmat('-', 1, 25), repmat('-', 1, 15), repmat('-', 1, 15), repmat('-', 1, 15));
+
+for test_idx = 1:num_tests
+    tc = test_cases{test_idx};
+    result = results{test_idx};
+    
+    % Find iterations to reach threshold
+    threshold = 1e-3;
+    iters_no = find(result.no_proj.errors < threshold, 1);
+    iters_with = find(result.with_proj.errors < threshold, 1);
+    
+    if isempty(iters_no)
+        str_no = 'N/A';
+    else
+        str_no = sprintf('%d', iters_no);
+    end
+    
+    if isempty(iters_with)
+        str_with = 'N/A';
+    else
+        str_with = sprintf('%d', iters_with);
+    end
+    
+    if ~isempty(iters_no) && ~isempty(iters_with)
+        speedup = (iters_no - iters_with) / iters_no * 100;
+        if speedup > 0
+            speedup_str = sprintf('✓ %.1f%% faster', speedup);
+        else
+            speedup_str = sprintf('✗ %.1f%% slower', -speedup);
+        end
+    else
+        speedup_str = '-';
+    end
+    
+    fprintf('%-25s | %-15s | %-15s | %s\n', ...
+            tc.name, str_no, str_with, speedup_str);
+end
+
+fprintf('\n');
+
+%% Generate Visualization
+fprintf('--- Generating Comparison Plots ---\n');
+generate_comparison_plots(test_cases, results);
+fprintf('✓ Plots generated\n\n');
+
+%% Recommendations
+fprintf('╔════════════════════════════════════════════════════════════╗\n');
+fprintf('║  Recommendations                                          ║\n');
+fprintf('╚════════════════════════════════════════════════════════════╝\n\n');
+
+% Count improvements
+num_improved = 0;
+num_degraded = 0;
+avg_improvement = 0;
+
+for test_idx = 1:num_tests
+    result = results{test_idx};
+    error_no = result.no_proj.error_final;
+    error_with = result.with_proj.error_final;
+    
+    if error_with < error_no
+        num_improved = num_improved + 1;
+        improvement = (error_no - error_with) / error_no * 100;
+        avg_improvement = avg_improvement + improvement;
+    else
+        num_degraded = num_degraded + 1;
+    end
+end
+
+if num_improved > 0
+    avg_improvement = avg_improvement / num_improved;
+end
+
+fprintf('Summary:\n');
+fprintf('  - Core projection improved %d/%d test cases\n', num_improved, num_tests);
+fprintf('  - Core projection degraded %d/%d test cases\n', num_degraded, num_tests);
+if num_improved > 0
+    fprintf('  - Average improvement when beneficial: %.1f%%\n', avg_improvement);
+end
+
+fprintf('\n');
+
+if num_improved >= num_tests * 0.7
+    fprintf('✓✓✓ RECOMMENDATION: ENABLE core projection (T_tucker.G = Core_proj)\n');
+    fprintf('    Benefits observed in %.0f%% of test cases\n', num_improved/num_tests*100);
+elseif num_improved > num_degraded
+    fprintf('→ RECOMMENDATION: Consider enabling for specific scenarios\n');
+    fprintf('    Particularly beneficial when m is small or without abs()\n');
+else
+    fprintf('✗ RECOMMENDATION: Keep core projection DISABLED\n');
+    fprintf('    No significant benefit or potential degradation\n');
+end
+
+fprintf('\n✓ Test Complete\n');
+
+%% ========================================================================
+%% Helper Functions
+%% ========================================================================
+
+function result = run_single_test(tc)
+    % Run test with and without core projection
+    
+    % Setup problem
+    rng(tc.rng_seed);
+    
+    % Ground truth
+    U1_true = randn(tc.d1, tc.r);
+    U2_true = randn(tc.d2, tc.r);
+    if tc.use_abs
+        Xstar = abs(U1_true) * abs(U2_true)';
+    else
+        Xstar = U1_true * U2_true';
+    end
+    Xstar = Xstar / norm(Xstar, 'fro');
+    
+    % Measurement operator
+    n = tc.d1 * tc.d2;
+    A = randn(tc.m, n);
+    operator = struct();
+    operator.A = @(X) A * X(:);
+    operator.A_star = @(y) reshape(A' * y, [tc.d1, tc.d2]);
+    
+    % Generate measurements
+    y = abs(operator.A(Xstar)) / sqrt(tc.m);
+    
+    % Setup Tucker operator
+    A_matrix = zeros(tc.m, n);
+    for j = 1:n
+        e_j = zeros(n, 1);
+        e_j(j) = 1;
+        E_j = reshape(e_j, [tc.d1, tc.d2]);
+        A_matrix(:, j) = operator.A(E_j);
+    end
+    
+    A_cells = cell(tc.m, 1);
+    for i = 1:tc.m
+        Ai = reshape(A_matrix(i, :), [tc.d1, tc.d2]);
+        A_cells{i} = Ai;
+    end
+    
+    tucker_op = TuckerOperator(A_cells, 'order', 4, 'symmetric', false);
+    tucker_op.A_mat = A_matrix';
+    
+    % Spectral initialization
+    dims = [tc.d1, tc.d2, tc.d1, tc.d2];
+    T_tucker_init = TuckerTensor(dims, tc.r, 'symmetric', false, 'init_method', 'zeros');
+    
+    spectral_operator = struct();
+    spectral_operator.A_cells = A_cells;
+    y_spectral = y.^2 * sqrt(tc.m);
+    
+    [U_cell_init, G_init] = T_tucker_init.initialize_spectral(spectral_operator, y_spectral, tc.m);
+    
+    for k = 1:4
+        T_tucker_init.U{k} = U_cell_init{k};
+    end
+    T_tucker_init.G = G_init;
+    
+    % Test WITHOUT projection
+    fprintf('  Testing WITHOUT core projection...\n');
+    T_tucker_no = T_tucker_init.copy();
+    result_no = run_rgd_no_projection(T_tucker_no, y_spectral, tucker_op, tc.m, Xstar, tc.mu, tc.T);
+    
+    % Test WITH projection
+    fprintf('  Testing WITH core projection...\n');
+    T_tucker_with = T_tucker_init.copy();
+    result_with = run_rgd_with_projection(T_tucker_with, y_spectral, tucker_op, tc.m, Xstar, tc.mu, tc.T);
+    
+    % Package results
+    result = struct();
+    result.no_proj = result_no;
+    result.with_proj = result_with;
+    result.test_config = tc;
+end
+
+function result = run_rgd_no_projection(T_tucker, y, tucker_op, m, Xstar, mu, T)
+    % Run RGD without core projection (current default)
+    
+    errors = zeros(T, 1);
+    losses = zeros(T, 1);
+    
+    for t = 1:T
+        % Forward pass
+        y_pred = tucker_op.forward(T_tucker) / sqrt(m);
+        
+        % Compute loss
+        residual = y_pred - y;
+        loss = 0.5 * norm(residual)^2;
+        losses(t) = loss;
+        
+        % Compute error
+        X_current = extract_matrix_from_tucker_2_no_proj(T_tucker);
+        [errors(t), ~] = rectify_sign_ambiguity(X_current, Xstar);
+        
+        % Gradient and retraction
+        if t < T
+            Grad_F = tucker_op.get_proj_grad_kronecker(T_tucker, y_pred / sqrt(m), y / sqrt(m));
+            T_tucker = T_tucker.retraction(Grad_F, mu);
+        end
+    end
+    
+    result = struct();
+    result.errors = errors;
+    result.losses = losses;
+    result.error_final = errors(end);
+    result.loss_final = losses(end);
+    result.T_tucker = T_tucker;
+end
+
+function result = run_rgd_with_projection(T_tucker, y, tucker_op, m, Xstar, mu, T)
+    % Run RGD with core projection
+    
+    errors = zeros(T, 1);
+    losses = zeros(T, 1);
+    
+    for t = 1:T
+        % Forward pass
+        y_pred = tucker_op.forward(T_tucker) / sqrt(m);
+        
+        % Compute loss
+        residual = y_pred - y;
+        loss = 0.5 * norm(residual)^2;
+        losses(t) = loss;
+        
+        % Compute error and get projected core
+        [X_current, Core_proj] = extract_matrix_from_tucker_2_with_proj(T_tucker);
+        [errors(t), ~] = rectify_sign_ambiguity(X_current, Xstar);
+        
+        % Apply core projection
+        U1 = T_tucker.U{1};
+        U2 = T_tucker.U{2};
+        U3 = T_tucker.U{3};
+        U4 = T_tucker.U{4};
+        G = T_tucker.G;
+        
+        % Rectify signs
+        U3_rect = U3;
+        U4_rect = U4;
+        for i = 1:r
+            if dot(U1(:,i), U3(:,i)) < 0
+                U3_rect(:,i) = -U3(:,i);
+            end
+            if dot(U2(:,i), U4(:,i)) < 0
+                U4_rect(:,i) = -U4(:,i);
+            end
+        end
+        
+        S3 = diag(sign(diag(U3_rect' * U3)));
+        S4 = diag(sign(diag(U4_rect' * U4)));
+        
+        G_rect = G;
+        for c = 1:r
+            for d = 1:r
+                G_rect(:, :, c, d) = G(:, :, c, d) * S3(c,c) * S4(d,d);
+            end
+        end
+        
+        G_mat = reshape(G_rect, [r*r, r*r]);
+        
+        [V_G, D_G] = eig(G_mat);
+        [lambda_max, idx_max] = max(abs(diag(D_G)));
+        q = V_G(:, idx_max);
+        
+        Core_proj = reshape(q*q'*abs(lambda_max), [r, r, r, r]);
+
+        T_tucker.U3 = U3_rect
+        T_tucker.G = Core_proj;
+        
+        % Gradient and retraction
+        if t < T
+            Grad_F = tucker_op.get_proj_grad_kronecker(T_tucker, y_pred / sqrt(m), y / sqrt(m));
+            T_tucker = T_tucker.retraction(Grad_F, mu);
+        end
+    end
+    
+    result = struct();
+    result.errors = errors;
+    result.losses = losses;
+    result.error_final = errors(end);
+    result.loss_final = losses(end);
+    result.T_tucker = T_tucker;
+end
+
+function X = extract_matrix_from_tucker_2_no_proj(T_tucker)
+    % Extract without returning projection
+    d1 = T_tucker.dims(1);
+    d2 = T_tucker.dims(2);
+    r = T_tucker.tucker_ranks(1);
+    
+    U1 = T_tucker.U{1};
+    U2 = T_tucker.U{2};
+    U3 = T_tucker.U{3};
+    U4 = T_tucker.U{4};
+    G = T_tucker.G;
+    
+    % Rectify signs
+    U3_rect = U3;
+    U4_rect = U4;
+    for i = 1:r
+        if dot(U1(:,i), U3(:,i)) < 0
+            U3_rect(:,i) = -U3(:,i);
+        end
+        if dot(U2(:,i), U4(:,i)) < 0
+            U4_rect(:,i) = -U4(:,i);
+        end
+    end
+    
+    S3 = diag(sign(diag(U3_rect' * U3)));
+    S4 = diag(sign(diag(U4_rect' * U4)));
+    
+    G_rect = G;
+    for c = 1:r
+        for d = 1:r
+            G_rect(:, :, c, d) = G(:, :, c, d) * S3(c,c) * S4(d,d);
+        end
+    end
+    
+    G_mat = reshape(G_rect, [r*r, r*r]);
+    
+    [V_G, D_G] = eig(G_mat);
+    [lambda_max, idx_max] = max(abs(diag(D_G)));
+    q = V_G(:, idx_max);
+    
+    U_kron = kron(U2, U1);
+    v = U_kron * q * sqrt(abs(lambda_max));
+    
+    X = reshape(v, [d1, d2]);
+    X = X / norm(X, 'fro');
+end
+
+function [X, Core_proj] = extract_matrix_from_tucker_2_with_proj(T_tucker)
+    % Extract with projection
+    d1 = T_tucker.dims(1);
+    d2 = T_tucker.dims(2);
+    r = T_tucker.tucker_ranks(1);
+    
+    U1 = T_tucker.U{1};
+    U2 = T_tucker.U{2};
+    U3 = T_tucker.U{3};
+    U4 = T_tucker.U{4};
+    G = T_tucker.G;
+    
+    % Rectify signs
+    U3_rect = U3;
+    U4_rect = U4;
+    for i = 1:r
+        if dot(U1(:,i), U3(:,i)) < 0
+            U3_rect(:,i) = -U3(:,i);
+        end
+        if dot(U2(:,i), U4(:,i)) < 0
+            U4_rect(:,i) = -U4(:,i);
+        end
+    end
+    
+    S3 = diag(sign(diag(U3_rect' * U3)));
+    S4 = diag(sign(diag(U4_rect' * U4)));
+    
+    G_rect = G;
+    for c = 1:r
+        for d = 1:r
+            G_rect(:, :, c, d) = G(:, :, c, d) * S3(c,c) * S4(d,d);
+        end
+    end
+    
+    G_mat = reshape(G_rect, [r*r, r*r]);
+    
+    [V_G, D_G] = eig(G_mat);
+    [lambda_max, idx_max] = max(abs(diag(D_G)));
+    q = V_G(:, idx_max);
+    
+    U_kron = kron(U2, U1);
+    v = U_kron * q * sqrt(abs(lambda_max));
+    
+    X = reshape(v, [d1, d2]);
+    X = X / norm(X, 'fro');
+    
+    % Return projected core
+    Core_proj = reshape(q*q'*abs(lambda_max), [r, r, r, r]);
+end
+
+function generate_comparison_plots(test_cases, results)
+    num_tests = length(test_cases);
+    
+    % Create figure with subplots
+    figure('Position', [100, 100, 1800, 1000]);
+    
+    % Error convergence plots
+    for test_idx = 1:min(num_tests, 6)  % Show up to 6 tests
+        subplot(2, 3, test_idx);
+        
+        result = results{test_idx};
+        tc = test_cases{test_idx};
+        
+        semilogy(result.no_proj.errors, 'b-', 'LineWidth', 2, 'DisplayName', 'No Projection');
+        hold on;
+        semilogy(result.with_proj.errors, 'r--', 'LineWidth', 2, 'DisplayName', 'With Projection');
+        
+        xlabel('Iteration');
+        ylabel('Relative Error');
+        title(sprintf('%s\n(m=%d, abs=%s)', tc.name, tc.m, mat2str(tc.use_abs)));
+        legend('Location', 'best');
+        grid on;
+    end
+    
+    sgtitle('Error Convergence Comparison: Core Projection Impact');
+    
+    % Summary bar chart
+    figure('Position', [100, 100, 1400, 600]);
+    
+    subplot(1, 2, 1);
+    final_errors_no = zeros(num_tests, 1);
+    final_errors_with = zeros(num_tests, 1);
+    for i = 1:num_tests
+        final_errors_no(i) = results{i}.no_proj.error_final;
+        final_errors_with(i) = results{i}.with_proj.error_final;
+    end
+    
+    x = 1:num_tests;
+    bar(x, [final_errors_no, final_errors_with]);
+    set(gca, 'XTickLabel', cellfun(@(tc) tc.name, test_cases, 'UniformOutput', false));
+    xtickangle(45);
+    ylabel('Final Error');
+    title('Final Error Comparison');
+    legend('No Projection', 'With Projection', 'Location', 'best');
+    grid on;
+    set(gca, 'YScale', 'log');
+    
+    subplot(1, 2, 2);
+    improvements = (final_errors_no - final_errors_with) ./ final_errors_no * 100;
+    bar(x, improvements);
+    hold on;
+    yline(0, 'k--', 'LineWidth', 1.5);
+    set(gca, 'XTickLabel', cellfun(@(tc) tc.name, test_cases, 'UniformOutput', false));
+    xtickangle(45);
+    ylabel('Improvement (%)');
+    title('Error Improvement with Core Projection');
+    grid on;
+    
+    % Add color coding
+    colors = zeros(num_tests, 3);
+    for i = 1:num_tests
+        if improvements(i) > 0
+            colors(i, :) = [0.2, 0.8, 0.2];  % Green for improvement
+        else
+            colors(i, :) = [0.8, 0.2, 0.2];  % Red for degradation
+        end
+    end
+    
+    colormap(colors);
+end
+
+

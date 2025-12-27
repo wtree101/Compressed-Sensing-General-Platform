@@ -26,8 +26,6 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
     %       - mu (or eta): step size (default: 0.01)
     %       - Xstar: ground truth matrix (for error tracking, optional)
     %       - verbose: Print progress (default: false)
-    %       - use_core_projection: Apply core projection after each iteration (default: false)
-    %                              Projects core to rank-1 diagonal structure
     %
     % Outputs:
     %   output - Struct containing auxiliary information:
@@ -67,7 +65,6 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
     end
     
     verbose = get_param(params, 'verbose', false);
-    use_core_projection = get_param(params, 'use_core_projection', false);  % Default: no projection
     
     % Extract dimensions from T_tucker
     d1 = T_tucker.dims(1);
@@ -102,7 +99,6 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
         fprintf('Matrix: %dx%d, Tucker rank: %d, Measurements: %d\n', ...
                 d1, d2, T_tucker.tucker_ranks(1), m);
         fprintf('Iterations: %d, Step size: %.4f\n', T, mu);
-        fprintf('Core projection: %s\n', mat2str(use_core_projection));
         if has_ground_truth
             fprintf('Initial loss: %.6e, Initial error: %.6e\n', loss, Error_Stand(1));
         else
@@ -124,7 +120,7 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
         % Step 3: Retraction - move along tangent direction on manifold
         % T_{t+1} = Retract(T_t - μ * grad_R)
         T_tucker = T_tucker.retraction(Grad_F, mu);
-        r = T_tucker.tucker_ranks(1);
+
         % Step 3.5: Rectify signs
         % Apply core projection
         U1 = T_tucker.U{1};
@@ -132,7 +128,7 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
         U3 = T_tucker.U{3};
         U4 = T_tucker.U{4};
         G = T_tucker.G;
-
+        
         % Rectify signs
         U3_rect = U3;
         U4_rect = U4;
@@ -144,10 +140,10 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
                 U4_rect(:,i) = -U4(:,i);
             end
         end
-
+        
         S3 = diag(sign(diag(U3_rect' * U3)));
         S4 = diag(sign(diag(U4_rect' * U4)));
-
+        
         G_rect = G;
         for c = 1:r
             for d = 1:r
@@ -155,8 +151,7 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
             end
         end
         T_tucker.U{3} = U1;
-        T_tucker.U{4} = U2;
-        T_tucker.G = G_rect;
+        T_tuc
 
         
         % Step 4: Compute errors for iteration t+1
@@ -167,20 +162,10 @@ function [output, T_tucker] = solve_RGD_tucker_kronecker(T_tucker, ~, y, tucker_
         
         if has_ground_truth
             % Extract matrix from Tucker tensor and compute error
-            [X_current, Core_proj] = extract_matrix_from_tucker_2(T_tucker);  % Use efficient method (no symmetrization)
+            [X_current,Core_proj] = extract_matrix_from_tucker_2(T_tucker);  % Use efficient method (no symmetrization)
             [Error_Stand(t+1), ~] = rectify_sign_ambiguity(X_current, Xstar);
-            
-            % Apply core projection if enabled
-            if use_core_projection
-                T_tucker.G = Core_proj;
-            end
-        else
-            % If no ground truth, we need to compute Core_proj separately if projection is enabled
-            if use_core_projection
-                [~, Core_proj] = extract_matrix_from_tucker_2(T_tucker);
-                T_tucker.G = Core_proj;
-            end
         end
+        %T_tucker.G = Core_proj;
         
         % Optional: Print progress
         if verbose && (mod(t, max(1, floor(T/10))) == 0 || t == 1)
@@ -285,8 +270,7 @@ function [X, Core_proj] = extract_matrix_from_tucker_2(T_tucker)
     G_mat_symm_error = norm(G_mat - G_mat', 'fro') / max(norm(G_mat, 'fro'), 1e-10);
     if G_mat_symm_error > 1e-4
         % For non-square, don't symmetrize - use SVD or eigendecomp on G_mat*G_mat'
-       % warning('G_mat is not symmetric (error=%.2e), using SVD approach', G_mat_symm_error);
-         G_mat = (G_mat + G_mat')/2;
+        warning('G_mat is not symmetric (error=%.2e), using SVD approach', G_mat_symm_error);
     end
     
     % Step 3: Eigendecompose G_mat (r² × r²) - much smaller than full tensor!
@@ -307,6 +291,6 @@ function [X, Core_proj] = extract_matrix_from_tucker_2(T_tucker)
     
     % Normalize
     X = X / norm(X, 'fro');
-    Core_proj = reshape(q*q'*abs(lambda_max),[r,r,r,r]);
+    Core_proj = reshape(q*q',[r,r,r,r]);
 end
 
