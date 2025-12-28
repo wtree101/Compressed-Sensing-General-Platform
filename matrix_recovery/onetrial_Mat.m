@@ -85,20 +85,81 @@ end
 
 % Use the solver function handle
 if isfield(params, 'alg_func') && ~isempty(params.alg_func)
-    % Use the modular solver
-    [solver_output, Xl] = params.alg_func(Xl, Ul, y, operator, d1, d2, r, m, params);
-    Error_Stand = solver_output.Error_Stand;
-    Error_function = solver_output.Error_function;
+    try
+        % Use the modular solver
+        [solver_output, Xl] = params.alg_func(Xl, Ul, y, operator, d1, d2, r, m, params);
+        Error_Stand = solver_output.Error_Stand;
+        Error_function = solver_output.Error_function;
+    catch ME
+        % Catch solver errors and mark trial as failed
+        if verbose >= 0
+            warning('Solver failed: %s', ME.message);
+        end
+        % Return failure output
+        output = create_failure_output(params);
+        is_success = 0;
+        return;
+    end
 else
-    % Fallback to RGD if no solver specified
-    [solver_output, Xl] = solve_RGD(Xl, Ul, y, operator, d1, d2, r, m, params);
-    Error_Stand = solver_output.Error_Stand;
-    Error_function = solver_output.Error_function;
+    try
+        % Fallback to RGD if no solver specified
+        [solver_output, Xl] = solve_RGD(Xl, Ul, y, operator, d1, d2, r, m, params);
+        Error_Stand = solver_output.Error_Stand;
+        Error_function = solver_output.Error_function;
+    catch ME
+        % Catch solver errors and mark trial as failed
+        if verbose >= 0
+            warning('RGD solver failed: %s', ME.message);
+        end
+        % Return failure output
+        output = create_failure_output(params);
+        is_success = 0;
+        return;
+    end
 end
 
 %% Final Analysis and Success Check
+% Check for NaN or Inf in result
+if any(isnan(Xl(:))) || any(isinf(Xl(:)))
+    if verbose >= 0
+        warning('Solution contains NaN or Inf values. Marking trial as failed.');
+    end
+    output = create_failure_output(params);
+    is_success = 0;
+    return;
+end
+
 % Compute final error with sign rectification
-[final_error, Xl_aligned] = rectify_sign_ambiguity(Xl, Xstar);
+try
+    [final_error, Xl_aligned] = rectify_sign_ambiguity(Xl, Xstar);
+catch ME
+    if verbose >= 0
+        warning('Error rectification failed: %s', ME.message);
+    end
+    output = create_failure_output(params);
+    is_success = 0;
+    return;
+end
+
+% Check for NaN in final error
+if isnan(final_error) || isinf(final_error)
+    if verbose >= 0
+        warning('Final error is NaN or Inf. Marking trial as failed.');
+    end
+    output = create_failure_output(params);
+    is_success = 0;
+    return;
+end
+
+% Compute recovered rank safely
+try
+    recovered_rank = rank(Xl_aligned, 1e-6);
+catch ME
+    if verbose >= 0
+        warning('Rank computation failed: %s. Using NaN.', ME.message);
+    end
+    recovered_rank = NaN;
+end
 
 % Check success criterion
 is_success = (final_error < 1e-2);
@@ -109,12 +170,33 @@ output.Error_Stand = Error_Stand;
 output.Error_function = Error_function;
 output.Xl_final = Xl_aligned;
 output.final_error = final_error;
-output.recovered_rank = rank(Xl, 1e-6);
+output.recovered_rank = recovered_rank;
 
 % Optional: plot convergence
 if verbose == 1
     semilogy(Error_Stand)
 end
 
+end
+
+%% Helper Functions
+
+function output = create_failure_output(params)
+    % CREATE_FAILURE_OUTPUT Create a failure output struct
+    % Returns an output struct with NaN/Inf values indicating failure
+    
+    % Get number of iterations if available
+    if isfield(params, 'T')
+        T = params.T;
+    else
+        T = 100; % Default
+    end
+    
+    output = struct();
+    output.Error_Stand = inf(T, 1);  % Mark as failed convergence
+    output.Error_function = inf(T, 1);
+    output.Xl_final = [];  % Empty matrix
+    output.final_error = inf;  % Failed
+    output.recovered_rank = NaN;
 end
 

@@ -324,3 +324,5 @@ function T = tensor_adjoint(z, A_tensor, d1, d2)
     T_vec = A_tensor' * z;  % (d1*d2)^2 x 1
     T = reshape(T_vec, [d1, d2, d1, d2]);  % Reshape to 4th-order tensor
 end
+
+
